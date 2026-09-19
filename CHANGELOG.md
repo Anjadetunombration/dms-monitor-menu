@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2
+
+- Corregido el tamaño de la píldora en DankBar para evitar que el widget quede con ancho inválido o desaparezca.
+- La píldora usa ahora `PluginComponent.widgetThickness` e `iconSize` directamente, sin depender del `Loader` padre.
+- Añadido permiso `process` al manifest para reflejar el uso real de `Proc.runCommand`.
+
 ## 0.6.1
 
 - Añadidos ajustes de apariencia para la píldora de DankBar.

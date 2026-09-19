@@ -509,16 +509,19 @@ PluginComponent {
 
     horizontalBarPill: Component {
         StyledRect {
-            implicitWidth: parent.widgetThickness + (root.forceBarPadding ? root.barPadding * 2 : 0)
+            // Use PluginComponent dimensions directly. The loaded pill should not depend
+            // on its Loader parent exposing widgetThickness.
+            readonly property real innerPadding: root.forceBarPadding ? root.barPadding : 0
+            implicitWidth: Math.max(root.widgetThickness, root.iconSize + innerPadding * 2)
             width: implicitWidth
-            height: parent.widgetThickness
+            height: root.widgetThickness
             radius: Theme.cornerRadius
             color: Theme.surfaceContainerHigh
 
             DankIcon {
                 anchors.centerIn: parent
                 name: "desktop_windows"
-                size: Theme.iconSizeSmall
+                size: root.iconSize
                 color: (root.mirrorActive || root.virtualEnabled) ? Theme.primary : Theme.surfaceText
             }
         }
@@ -526,8 +529,9 @@ PluginComponent {
 
     verticalBarPill: Component {
         StyledRect {
-            width: parent.widgetThickness
-            implicitHeight: parent.widgetThickness + (root.forceBarPadding ? root.barPadding * 2 : 0)
+            readonly property real innerPadding: root.forceBarPadding ? root.barPadding : 0
+            width: root.widgetThickness
+            implicitHeight: Math.max(root.widgetThickness, root.iconSize + innerPadding * 2)
             height: implicitHeight
             radius: Theme.cornerRadius
             color: Theme.surfaceContainerHigh
@@ -535,7 +539,7 @@ PluginComponent {
             DankIcon {
                 anchors.centerIn: parent
                 name: "desktop_windows"
-                size: Theme.iconSizeSmall
+                size: root.iconSize
                 color: (root.mirrorActive || root.virtualEnabled) ? Theme.primary : Theme.surfaceText
             }
         }

@@ -1,4 +1,4 @@
-# Monitor Menu v0.6.1
+# Monitor Menu v0.6.2
 
 Widget para DankMaterialShell (DMS) + Niri que gestiona pantallas físicas y un segundo monitor virtual basado en VKMS + Sunshine.
 

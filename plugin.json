@@ -2,7 +2,7 @@
   "id": "monitorMenu",
   "name": "Monitor Menu",
   "description": "Gestión de monitores físicos y virtuales para DMS/Niri",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "author": "Community",
   "type": "widget",
   "capabilities": [
@@ -17,6 +17,7 @@
   ],
   "settings": "./MonitorMenuSettings.qml",
   "permissions": [
-    "settings_write"
+    "settings_write",
+    "process"
   ]
 }
