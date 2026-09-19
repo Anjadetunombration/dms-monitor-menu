@@ -1,0 +1,22 @@
+{
+  "id": "monitorMenu",
+  "name": "Monitor Menu",
+  "description": "Gestión de monitores físicos y virtuales para DMS/Niri",
+  "version": "0.6.1",
+  "author": "Community",
+  "type": "widget",
+  "capabilities": [
+    "dankbar-widget"
+  ],
+  "component": "./MonitorMenu.qml",
+  "icon": "desktop_windows",
+  "requires_dms": ">=1.6.0",
+  "dependencies": [
+    "dms",
+    "niri"
+  ],
+  "settings": "./MonitorMenuSettings.qml",
+  "permissions": [
+    "settings_write"
+  ]
+}
