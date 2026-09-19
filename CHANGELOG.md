@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1
+
+- Restaurado `Modo de pantalla` cuando `Virtual-1` es la única salida secundaria.
+- `Solo principal` también apaga el monitor virtual.
+- `Extender` vuelve a encender `Virtual-1` cuando está disponible.
+- `Duplicar` puede usar `Virtual-1` como destino mediante `wl-mirror`.
+- El estado `Solo principal` / `Duplicar` / `Extender` ahora cuenta también la salida virtual.
+
 ## 0.7.0
 
 - Añadido selector de salida de audio para el monitor virtual.

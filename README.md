@@ -1,4 +1,4 @@
-# Monitor Menu v0.7.0
+# Monitor Menu v0.7.1
 
 Widget para DankMaterialShell (DMS) + Niri que gestiona pantallas físicas y un segundo monitor virtual basado en VKMS + Sunshine.
 
@@ -6,7 +6,7 @@ Widget para DankMaterialShell (DMS) + Niri que gestiona pantallas físicas y un 
 
 - Detecta pantallas físicas con `dms randr --json` y actualiza el estado sin reiniciar DMS.
 - Protege la pantalla principal para evitar apagarla desde el menú.
-- En pantallas físicas secundarias ofrece `Solo principal`, `Duplicar` (con `wl-mirror`) y `Extender`.
+- Ofrece `Solo principal`, `Duplicar` (con `wl-mirror`) y `Extender` cuando existe una salida secundaria, incluida `Virtual-1`.
 - Gestiona `Virtual-1` como un monitor real dentro de la misma sesión de Niri.
 - Arranca Sunshine solo cuando `Virtual-1` ya está anunciado y verifica que Sunshine capture el monitor correcto.
 - Permite elegir la salida de audio del monitor virtual: `Local` o `Virtual`.
@@ -41,7 +41,7 @@ Al cambiar resolución con el monitor virtual encendido, Sunshine se reinicia pa
 - kernel con módulo `vkms`
 - Sunshine
 - `jq` recomendado para reportar el modo activo con precisión
-- `wl-mirror` solo para el modo `Duplicar` de pantallas físicas
+- `wl-mirror` para el modo `Duplicar`, tanto en salidas físicas secundarias como en `Virtual-1`
 
 Sunshine puede estar instalado de forma nativa. En Bedrock Linux también se admite Sunshine dentro de un estrato; por defecto se usa `arch`. Puede cambiarse con:
 

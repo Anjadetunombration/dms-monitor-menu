@@ -59,12 +59,16 @@ PluginComponent {
         return result
     }
 
+    readonly property bool hasSecondaryOutput: physicalOutputs.length > 1 || virtualPresent
+
     readonly property int enabledSecondaryCount: {
         let count = 0
         for (let i = 0; i < physicalOutputs.length; ++i) {
             if (physicalOutputs[i].name !== primaryOutput && physicalOutputs[i].enabled)
                 count++
         }
+        if (virtualEnabled)
+            count++
         return count
     }
 
@@ -409,8 +413,25 @@ PluginComponent {
                 if (output.name !== primaryOutput && output.enabled)
                     Quickshell.execDetached(["niri", "msg", "output", output.name, "off"])
             }
-            root.modesExpanded = false
-            refreshAfterAction.restart()
+
+            const finish = () => {
+                root.modesExpanded = false
+                refreshAfterAction.restart()
+            }
+
+            if (virtualEnabled && virtualHelperPath) {
+                Proc.runCommand(
+                    "monitorMenu.modeVirtualStop",
+                    ["sh", virtualHelperPath, "stop"],
+                    (stdout, exitCode) => {
+                        if (exitCode !== 0)
+                            root.lastError = "No se pudo apagar el monitor virtual"
+                        finish()
+                    }
+                )
+            } else {
+                finish()
+            }
         })
     }
 
@@ -427,13 +448,34 @@ PluginComponent {
                 if (!output.enabled)
                     Quickshell.execDetached(["niri", "msg", "output", output.name, "on"])
             }
-            root.modesExpanded = false
-            refreshAfterAction.restart()
+
+            const finish = () => {
+                root.modesExpanded = false
+                refreshAfterAction.restart()
+            }
+
+            if (virtualPresent && !virtualEnabled && virtualHelperPath) {
+                Proc.runCommand(
+                    "monitorMenu.modeVirtualStart",
+                    ["sh", virtualHelperPath, "start", primaryOutput],
+                    (stdout, exitCode) => {
+                        if (exitCode === 20)
+                            root.lastError = "No se encontró " + virtualOutput + " (VKMS)"
+                        else if (exitCode === 127)
+                            root.lastError = "No se encontró Sunshine"
+                        else if (exitCode !== 0)
+                            root.lastError = "No se pudo encender el monitor virtual"
+                        finish()
+                    }
+                )
+            } else {
+                finish()
+            }
         })
     }
 
     function duplicatePrimary() {
-        if (busy || physicalOutputs.length < 2)
+        if (busy || !hasSecondaryOutput)
             return
 
         if (!wlMirrorInstalled) {
@@ -451,6 +493,8 @@ PluginComponent {
             if (physicalOutputs[i].name !== primaryOutput)
                 targets.push(physicalOutputs[i].name)
         }
+        if (virtualPresent)
+            targets.push(virtualOutput)
 
         if (targets.length === 0)
             return
@@ -458,29 +502,54 @@ PluginComponent {
         root.busy = true
         root.lastError = ""
 
-        const args = ["sh", mirrorHelperPath, "start", primaryOutput]
-        for (let i = 0; i < targets.length; ++i)
-            args.push(targets[i])
+        const startMirror = () => {
+            const args = ["sh", mirrorHelperPath, "start", primaryOutput]
+            for (let i = 0; i < targets.length; ++i)
+                args.push(targets[i])
 
-        Proc.runCommand(
-            "monitorMenu.mirrorStart",
-            args,
-            (stdout, exitCode) => {
-                root.busy = false
+            Proc.runCommand(
+                "monitorMenu.mirrorStart",
+                args,
+                (stdout, exitCode) => {
+                    root.busy = false
 
-                if (exitCode === 0) {
-                    root.mirrorActive = true
-                    root.modesExpanded = false
-                } else if (exitCode === 127) {
-                    root.wlMirrorInstalled = false
-                    root.lastError = "Duplicar requiere wl-mirror"
-                } else {
-                    root.lastError = "No se pudo iniciar la duplicación"
+                    if (exitCode === 0) {
+                        root.mirrorActive = true
+                        root.modesExpanded = false
+                    } else if (exitCode === 127) {
+                        root.wlMirrorInstalled = false
+                        root.lastError = "Duplicar requiere wl-mirror"
+                    } else {
+                        root.lastError = "No se pudo iniciar la duplicación"
+                    }
+
+                    refreshAfterAction.restart()
                 }
+            )
+        }
 
-                refreshAfterAction.restart()
-            }
-        )
+        if (virtualPresent && !virtualEnabled && virtualHelperPath) {
+            Proc.runCommand(
+                "monitorMenu.duplicateVirtualStart",
+                ["sh", virtualHelperPath, "start", primaryOutput],
+                (stdout, exitCode) => {
+                    if (exitCode !== 0) {
+                        root.busy = false
+                        if (exitCode === 20)
+                            root.lastError = "No se encontró " + virtualOutput + " (VKMS)"
+                        else if (exitCode === 127)
+                            root.lastError = "No se encontró Sunshine"
+                        else
+                            root.lastError = "No se pudo encender el monitor virtual"
+                        refreshAfterAction.restart()
+                        return
+                    }
+                    startMirror()
+                }
+            )
+        } else {
+            startMirror()
+        }
     }
 
     Component.onCompleted: {
@@ -536,8 +605,8 @@ PluginComponent {
         + (root.virtualPresent && root.resolutionExpanded ? Math.max(1, root.virtualModes.length) * 46 : 0)
         + (root.virtualPresent ? 56 : 0)
         + (root.virtualPresent && root.audioExpanded ? 92 : 0)
-        + (root.physicalOutputs.length > 1 ? 56 : 0)
-        + (root.physicalOutputs.length > 1 && root.modesExpanded ? 144 : 0)
+        + (root.hasSecondaryOutput ? 56 : 0)
+        + (root.hasSecondaryOutput && root.modesExpanded ? 144 : 0)
     )
 
     horizontalBarPill: Component {
@@ -662,7 +731,7 @@ PluginComponent {
                 }
 
                 StyledRect {
-                    visible: root.physicalOutputs.length > 1
+                    visible: root.hasSecondaryOutput
                     width: parent.width
                     height: 48
                     radius: Theme.cornerRadius
@@ -724,7 +793,7 @@ PluginComponent {
                 }
 
                 Column {
-                    visible: root.physicalOutputs.length > 1 && root.modesExpanded
+                    visible: root.hasSecondaryOutput && root.modesExpanded
                     width: parent.width
                     spacing: Theme.spacingXS
 
