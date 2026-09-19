@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0
+
+- Añadido selector de salida de audio para el monitor virtual.
+- `Local`: el receptor virtual recibe solo video y el audio permanece en el equipo.
+- `Virtual`: Sunshine transmite el audio al receptor virtual y evita duplicarlo en la salida local.
+- La selección se guarda y se reaplica al encender el monitor virtual.
+- Cambio de audio en caliente con reinicio controlado de Sunshine, sin apagar `Virtual-1`.
+- La interfaz usa los nombres `Local` y `Virtual` para mantener coherencia con el resto del widget.
+
 ## 0.6.2
 
 - Corregido el tamaño de la píldora en DankBar para evitar que el widget quede con ancho inválido o desaparezca.
@@ -28,4 +37,4 @@
 
 - Espera activa de `Virtual-1` antes de arrancar Sunshine.
 - Verificación de que Sunshine capture `Virtual-1` y no el primer monitor físico.
-- Streaming de audio desactivado para usar Moonlight como segundo monitor visual.
+- Streaming de audio desactivado para usar el receptor virtual como segundo monitor visual.

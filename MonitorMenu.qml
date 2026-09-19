@@ -18,6 +18,7 @@ PluginComponent {
     property bool busy: false
     property bool modesExpanded: false
     property bool resolutionExpanded: false
+    property bool audioExpanded: false
     property bool initializedVirtual: false
     property bool wlMirrorInstalled: false
     property bool mirrorActive: false
@@ -38,6 +39,7 @@ PluginComponent {
     property int virtualHeight: 1080
     property int virtualRefresh: 60000
     property string virtualCapture: "unknown"
+    property string virtualAudioMode: "local"
     property var virtualModes: []
 
     readonly property string mirrorHelperPath: pluginService
@@ -173,6 +175,7 @@ PluginComponent {
                 root.virtualHeight = parseInt(s.height || "1080")
                 root.virtualRefresh = parseInt(s.refresh || "60000")
                 root.virtualCapture = s.capture || "unknown"
+                root.virtualAudioMode = s.audio === "virtual" ? "virtual" : "local"
             },
             100
         )
@@ -268,7 +271,8 @@ PluginComponent {
         if (virtualEnabled && virtualCapture === "wrong")
             return virtualOutput + " · captura incorrecta"
         return virtualOutput + " · " + virtualWidth + "×" + virtualHeight
-               + " · " + hz(virtualRefresh) + " Hz · video remoto · audio local"
+               + " · " + hz(virtualRefresh) + " Hz · audio "
+               + (virtualAudioMode === "virtual" ? "Virtual" : "Local")
     }
 
     function stopMirror(done) {
@@ -332,6 +336,33 @@ PluginComponent {
                     root.lastError = "No se pudo cambiar la resolución virtual"
                 else
                     root.resolutionExpanded = false
+                refreshAfterAction.restart()
+            }
+        )
+    }
+
+    function setVirtualAudio(mode) {
+        if (busy || !virtualPresent || !virtualHelperPath)
+            return
+        if (mode !== "local" && mode !== "virtual")
+            return
+
+        root.busy = true
+        root.lastError = ""
+
+        Proc.runCommand(
+            "monitorMenu.virtualAudioSet",
+            ["sh", virtualHelperPath, "set-audio", mode],
+            (stdout, exitCode) => {
+                root.busy = false
+                if (exitCode === 29)
+                    root.lastError = "Modo de audio inválido"
+                else if (exitCode === 127)
+                    root.lastError = "No se encontró Sunshine"
+                else if (exitCode !== 0)
+                    root.lastError = "No se pudo cambiar el audio virtual"
+                else
+                    root.audioExpanded = false
                 refreshAfterAction.restart()
             }
         )
@@ -503,6 +534,8 @@ PluginComponent {
         + 66
         + (root.virtualPresent ? 56 : 0)
         + (root.virtualPresent && root.resolutionExpanded ? Math.max(1, root.virtualModes.length) * 46 : 0)
+        + (root.virtualPresent ? 56 : 0)
+        + (root.virtualPresent && root.audioExpanded ? 92 : 0)
         + (root.physicalOutputs.length > 1 ? 56 : 0)
         + (root.physicalOutputs.length > 1 && root.modesExpanded ? 144 : 0)
     )
@@ -682,8 +715,10 @@ PluginComponent {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             root.modesExpanded = !root.modesExpanded
-                            if (root.modesExpanded)
+                            if (root.modesExpanded) {
                                 root.resolutionExpanded = false
+                                root.audioExpanded = false
+                            }
                         }
                     }
                 }
@@ -879,8 +914,10 @@ PluginComponent {
                         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                         onClicked: {
                             root.resolutionExpanded = !root.resolutionExpanded
-                            if (root.resolutionExpanded)
+                            if (root.resolutionExpanded) {
                                 root.modesExpanded = false
+                                root.audioExpanded = false
+                            }
                         }
                     }
                 }
@@ -942,6 +979,146 @@ PluginComponent {
                                 enabled: !root.busy && !selected
                                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onClicked: root.setVirtualMode(resolutionData.mode)
+                            }
+                        }
+                    }
+                }
+
+
+                StyledRect {
+                    visible: root.virtualPresent
+                    width: parent.width
+                    height: 48
+                    radius: Theme.cornerRadius
+                    color: audioMouse.containsMouse
+                           ? Theme.surfaceContainerHighest
+                           : Theme.surfaceContainerHigh
+                    opacity: root.busy ? 0.65 : 1.0
+
+                    DankIcon {
+                        id: audioIcon
+                        anchors.left: parent.left
+                        anchors.leftMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: root.virtualAudioMode === "virtual" ? "cast_connected" : "volume_up"
+                        size: Theme.iconSize
+                        color: Theme.surfaceText
+                    }
+
+                    StyledText {
+                        anchors.left: audioIcon.right
+                        anchors.leftMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Audio"
+                        color: Theme.surfaceText
+                        font.pixelSize: Theme.fontSizeMedium
+                    }
+
+                    Row {
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.spacingXS
+
+                        StyledText {
+                            text: root.virtualAudioMode === "virtual" ? "Virtual" : "Local"
+                            color: Theme.surfaceVariantText
+                            font.pixelSize: Theme.fontSizeSmall
+                        }
+
+                        DankIcon {
+                            name: root.audioExpanded ? "expand_less" : "chevron_right"
+                            size: Theme.iconSizeSmall
+                            color: Theme.surfaceVariantText
+                        }
+                    }
+
+                    MouseArea {
+                        id: audioMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        enabled: !root.busy
+                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: {
+                            root.audioExpanded = !root.audioExpanded
+                            if (root.audioExpanded) {
+                                root.resolutionExpanded = false
+                                root.modesExpanded = false
+                            }
+                        }
+                    }
+                }
+
+                Column {
+                    visible: root.virtualPresent && root.audioExpanded
+                    width: parent.width
+                    spacing: Theme.spacingXS
+
+                    Repeater {
+                        model: [
+                            {
+                                mode: "local",
+                                label: "Local",
+                                detail: "Audio solo en el equipo",
+                                icon: "speaker"
+                            },
+                            {
+                                mode: "virtual",
+                                label: "Virtual",
+                                detail: "Audio solo en el receptor virtual",
+                                icon: "cast_connected"
+                            }
+                        ]
+
+                        delegate: StyledRect {
+                            property var audioData: modelData
+                            readonly property bool selected: root.virtualAudioMode === audioData.mode
+
+                            width: parent.width
+                            height: 42
+                            radius: Theme.cornerRadius
+                            color: audioOptionMouse.containsMouse
+                                   ? Theme.surfaceContainerHighest
+                                   : Theme.surfaceContainerHigh
+
+                            DankIcon {
+                                id: audioCheck
+                                anchors.left: parent.left
+                                anchors.leftMargin: Theme.spacingM
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: selected ? "check_circle" : audioData.icon
+                                size: Theme.iconSizeSmall
+                                color: selected ? Theme.primary : Theme.surfaceVariantText
+                            }
+
+                            Column {
+                                anchors.left: audioCheck.right
+                                anchors.leftMargin: Theme.spacingM
+                                anchors.right: parent.right
+                                anchors.rightMargin: Theme.spacingM
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+
+                                StyledText {
+                                    text: audioData.label
+                                    color: selected ? Theme.primary : Theme.surfaceText
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+
+                                StyledText {
+                                    text: audioData.detail
+                                    color: Theme.surfaceVariantText
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+                            }
+
+                            MouseArea {
+                                id: audioOptionMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: !root.busy && !selected
+                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onClicked: root.setVirtualAudio(audioData.mode)
                             }
                         }
                     }

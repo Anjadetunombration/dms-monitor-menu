@@ -1,4 +1,4 @@
-# Monitor Menu v0.6.2
+# Monitor Menu v0.7.0
 
 Widget para DankMaterialShell (DMS) + Niri que gestiona pantallas físicas y un segundo monitor virtual basado en VKMS + Sunshine.
 
@@ -9,7 +9,7 @@ Widget para DankMaterialShell (DMS) + Niri que gestiona pantallas físicas y un 
 - En pantallas físicas secundarias ofrece `Solo principal`, `Duplicar` (con `wl-mirror`) y `Extender`.
 - Gestiona `Virtual-1` como un monitor real dentro de la misma sesión de Niri.
 - Arranca Sunshine solo cuando `Virtual-1` ya está anunciado y verifica que Sunshine capture el monitor correcto.
-- Mantiene el audio en el host: `stream_audio = disabled`. Moonlight recibe video, no una copia del audio del sistema.
+- Permite elegir la salida de audio del monitor virtual: `Local` o `Virtual`.
 - Permite elegir resolución virtual desde el widget. Solo muestra presets que VKMS/Niri anuncian realmente.
 - Guarda la resolución elegida para el siguiente encendido del monitor virtual.
 - Detecta automáticamente la salida principal, prefiriendo un panel `eDP-*` cuando existe.
@@ -71,16 +71,30 @@ sudo sh ~/.config/DankMaterialShell/plugins/MonitorMenu/setup-vkms.sh install
 
 Después reinicie DMS o vuelva a escanear plugins.
 
-## Sunshine
+## Sunshine y audio
 
-El helper mantiene estas opciones:
+El helper mantiene `output_name = Virtual-1` y gestiona dos modos de audio desde el propio widget:
+
+### Local
 
 ```ini
 output_name = Virtual-1
 stream_audio = disabled
 ```
 
-También elimina un `virtual_sink` configurado por versiones anteriores del widget. Esto permite usar Moonlight como segundo monitor visual mientras el audio continúa saliendo por PipeWire/WirePlumber, Bluetooth, altavoces o la salida local seleccionada en el host.
+El receptor virtual recibe solo video y el audio continúa en PipeWire/WirePlumber, Bluetooth, altavoces o la salida local seleccionada en el host.
+
+### Virtual
+
+```ini
+output_name = Virtual-1
+stream_audio = enabled
+virtual_sink = sink-sunshine-stereo
+```
+
+El audio se transmite al receptor virtual y Sunshine usa su sink virtual para evitar duplicarlo en la salida local del host.
+
+La selección se guarda en el estado del plugin y puede cambiarse con `Virtual-1` encendido; Sunshine se reinicia de forma controlada para aplicar el nuevo modo sin apagar el monitor virtual.
 
 ## Diagnóstico
 
@@ -99,7 +113,7 @@ sunshine=1
 width=1920
 height=1080
 refresh=60000
-audio=host-only
+audio=local
 capture=virtual
 ```
 
@@ -107,6 +121,13 @@ Modos disponibles:
 
 ```bash
 ~/.config/DankMaterialShell/plugins/MonitorMenu/virtual-monitor-helper.sh modes
+```
+
+Cambiar audio manualmente:
+
+```bash
+~/.config/DankMaterialShell/plugins/MonitorMenu/virtual-monitor-helper.sh set-audio local
+~/.config/DankMaterialShell/plugins/MonitorMenu/virtual-monitor-helper.sh set-audio virtual
 ```
 
 Log de Sunshine gestionado por el widget:

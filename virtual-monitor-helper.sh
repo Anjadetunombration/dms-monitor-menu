@@ -9,10 +9,12 @@ cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sunshine"
 state_file="$state_dir/virtual.state"
 mode_file="$state_dir/virtual.mode"
+audio_file="$state_dir/virtual.audio"
 sunshine_pidfile="$runtime_dir/monitor-menu-sunshine.pid"
 sunshine_log="$cache_dir/monitor-menu-sunshine.log"
 sunshine_conf="$config_dir/sunshine.conf"
 default_mode="1920x1080@60.000"
+default_audio_mode="local"
 
 mkdir -p "$state_dir" "$cache_dir" "$config_dir"
 
@@ -108,6 +110,28 @@ desired_mode() {
 
 persist_mode() {
     printf '%s\n' "$1" > "$mode_file"
+}
+
+valid_audio_mode() {
+    case "$1" in
+        local|virtual) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+desired_audio_mode() {
+    mode="$default_audio_mode"
+    if [ -f "$audio_file" ]; then
+        candidate="$(cat "$audio_file" 2>/dev/null || true)"
+        if valid_audio_mode "$candidate"; then
+            mode="$candidate"
+        fi
+    fi
+    printf '%s\n' "$mode"
+}
+
+persist_audio_mode() {
+    printf '%s\n' "$1" > "$audio_file"
 }
 
 parse_mode() {
@@ -231,9 +255,20 @@ unset_conf_value() {
 
 configure_sunshine() {
     set_conf_value output_name "$virtual_output"
-    # Segundo monitor = video solamente; el audio permanece en el host.
-    unset_conf_value virtual_sink
-    set_conf_value stream_audio "disabled"
+
+    case "$(desired_audio_mode)" in
+        virtual)
+            # Audio remoto: Sunshine transmite el audio y usa su sink virtual
+            # para evitar duplicarlo en la salida local del host.
+            set_conf_value stream_audio "enabled"
+            set_conf_value virtual_sink "sink-sunshine-stereo"
+            ;;
+        *)
+            # Audio local: el monitor virtual transmite solo video.
+            unset_conf_value virtual_sink
+            set_conf_value stream_audio "disabled"
+            ;;
+    esac
 }
 
 position_virtual_right_of() {
@@ -409,11 +444,26 @@ set_virtual_mode() {
     start_sunshine
 }
 
+set_virtual_audio() {
+    mode="$1"
+    valid_audio_mode "$mode" || return 29
+
+    persist_audio_mode "$mode"
+    configure_sunshine
+
+    # Si el monitor virtual está activo, reinicia Sunshine para aplicar
+    # el cambio de audio sin apagar Virtual-1.
+    if [ "$(virtual_state)" = "on" ]; then
+        start_sunshine
+    fi
+}
+
 init_virtual() {
     primary="${1:-eDP-1}"
     state=""
 
     [ -f "$mode_file" ] || persist_mode "$default_mode"
+    [ -f "$audio_file" ] || persist_audio_mode "$default_audio_mode"
 
     if [ -f "$state_file" ]; then
         state="$(cat "$state_file" 2>/dev/null || true)"
@@ -492,7 +542,7 @@ print_status() {
     printf 'height=%s\n' "$height"
     printf 'refresh=%s\n' "$refresh"
     printf 'mode=%s\n' "$mode"
-    printf 'audio=host-only\n'
+    printf 'audio=%s\n' "$(desired_audio_mode)"
     printf 'capture=%s\n' "$(selected_capture)"
 }
 
@@ -510,6 +560,10 @@ case "${1:-}" in
         [ "$#" -ge 2 ] || { echo "missing mode" >&2; exit 2; }
         set_virtual_mode "$2" "${3:-eDP-1}"
         ;;
+    set-audio)
+        [ "$#" -ge 2 ] || { echo "missing audio mode" >&2; exit 2; }
+        set_virtual_audio "$2"
+        ;;
     modes)
         print_modes
         ;;
@@ -520,7 +574,7 @@ case "${1:-}" in
         tail -n "${2:-80}" "$sunshine_log" 2>/dev/null || true
         ;;
     *)
-        echo "usage: $0 {start [PRIMARY]|stop|init [PRIMARY]|set-mode MODE [PRIMARY]|modes|status|log [N]}" >&2
+        echo "usage: $0 {start [PRIMARY]|stop|init [PRIMARY]|set-mode MODE [PRIMARY]|set-audio local|virtual|modes|status|log [N]}" >&2
         exit 2
         ;;
 esac
