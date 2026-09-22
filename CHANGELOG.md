@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.0
+
+- Reducido el consumo en reposo: pantallas, duplicación, monitor virtual y red solo se consultan mientras el menú está visible, con refresco inmediato al abrirlo.
+- Añadidos `Automático`, `Red actual` y `Bypass` como modos generales de red.
+- Añadido helper root-owned con sudoers limitado; DMS no ejecuta scripts modificables por el usuario como root.
+- Añadida LAN privada mediante hostapd/dnsmasq con SSID, clave y MAC local persistentes.
+- El AP sigue el canal del uplink Wi-Fi y pasa a standalone con debounce cuando se pierde.
+- El watcher pausa el AP durante asociaciones de NetworkManager, exige una asociación estable y aplica cooldown tras errores.
+- Añadida compartición opcional de Internet con reglas nftables aisladas y forwarding por interfaz.
+- Estado `key=value` dinámico para interfaz, SSID, host, banda, canal, clientes, uplink, routing y máquina de estados.
+- `LAN privada` aparece solo cuando el AP está realmente activo.
+- `Host` y `Clave` se ocultan por defecto, se vuelven a consultar al interactuar y se copian con Qt sin `wl-copy`.
+- La clave se obtiene bajo demanda, no entra en el polling ni en PluginSettings y no se registra en logs.
+- La red se inicia y limpia en todos los caminos que encienden o apagan `Virtual-1`, incluida la restauración de DMS.
+- Corregida la propagación de errores de modo y Sunshine en el helper del monitor virtual.
+- El arranque virtual publica su intención antes del hotplug y serializa operaciones para sobrevivir a la recreación de superficies de DMS.
+- La restauración de `Virtual-1` es idempotente cuando Sunshine ya captura correctamente la salida.
+- `Monitor virtual = OFF` fuerza ahora el connector VKMS a `disconnected`, emite hotplug y retira `Virtual-1` de Niri/DMS sin reiniciar la sesión.
+- Añadido helper VKMS root-owned con ownership explícito, sudoers restringido, serialización y estados `ABSENT`, `CREATING`, `ACTIVE`, `DESTROYING` y `ERROR`.
+- Sunshine se detiene antes de retirar el connector y el encendido espera a que Niri/DMS anuncien la salida antes de iniciar la captura.
+- Eliminada la carga permanente de VKMS en nuevas instalaciones; el helper migra la configuración anterior de `modules-load.d`.
+- Corregida la colisión global de IDs de `Proc.runCommand` entre instancias del plugin que dejaba `busy` y `networkBusy` bloqueados tras hotplug.
+- Cada instancia usa ahora un namespace de procesos propio y pasa `owner` para descartar callbacks de componentes destruidos.
+- La reconciliación y el polling de red ya no bloquean acciones de pantalla; sus flags permanecen separados.
+- Resolución y Audio quedan atenuados solo con Virtual-1 apagado o en transición, y vuelven a ser interactivos en `ACTIVE`.
+- Eliminado el volcado de diff accidental `wq`.
+
 ## 0.7.1
 
 - Restaurado `Modo de pantalla` cuando `Virtual-1` es la única salida secundaria.

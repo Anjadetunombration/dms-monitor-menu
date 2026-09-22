@@ -13,10 +13,49 @@ audio_file="$state_dir/virtual.audio"
 sunshine_pidfile="$runtime_dir/monitor-menu-sunshine.pid"
 sunshine_log="$cache_dir/monitor-menu-sunshine.log"
 sunshine_conf="$config_dir/sunshine.conf"
+operation_lock="$runtime_dir/monitor-menu-virtual.lock"
+vkms_helper="${MONITOR_MENU_VKMS_HELPER:-/usr/local/libexec/monitor-menu-vkms}"
 default_mode="1920x1080@60.000"
 default_audio_mode="local"
 
 mkdir -p "$state_dir" "$cache_dir" "$config_dir"
+
+acquire_operation_lock() {
+    tries=0
+    while ! mkdir "$operation_lock" 2>/dev/null; do
+        set -- "$operation_lock"/owner.*
+        owner=""
+        [ ! -d "$1" ] || owner=${1##*.}
+        case "$owner" in
+            ''|*[!0-9]*)
+                [ "$tries" -lt 20 ] || rmdir "$operation_lock" 2>/dev/null || true
+                ;;
+            *)
+                if ! kill -0 "$owner" 2>/dev/null; then
+                    rmdir "$operation_lock/owner.$owner" 2>/dev/null || true
+                    rmdir "$operation_lock" 2>/dev/null || true
+                fi
+                ;;
+        esac
+        tries=$((tries + 1))
+        [ "$tries" -lt 600 ] || return 75
+        sleep 0.10
+    done
+    mkdir "$operation_lock/owner.$$" || return 75
+}
+
+release_operation_lock() {
+    rmdir "$operation_lock/owner.$$" 2>/dev/null || true
+    rmdir "$operation_lock" 2>/dev/null || true
+}
+
+lock_operation() {
+    acquire_operation_lock
+    trap 'release_operation_lock' EXIT
+    trap 'release_operation_lock; exit 129' HUP
+    trap 'release_operation_lock; exit 130' INT
+    trap 'release_operation_lock; exit 143' TERM
+}
 
 niri_outputs() {
     niri msg outputs 2>/dev/null || true
@@ -46,6 +85,47 @@ virtual_state() {
             if (!found) print "missing"
         }
     ' | head -n 1
+}
+
+vkms_status() {
+    [ -x "$vkms_helper" ] || return 31
+    sudo -n "$vkms_helper" status 2>/dev/null
+}
+
+vkms_status_value() {
+    key="$1"
+    status="$(vkms_status 2>/dev/null || true)"
+    printf '%s\n' "$status" | sed -n "s/^${key}=//p" | sed -n '1p'
+}
+
+vkms_managed() {
+    [ "$(vkms_status_value owned)" = "1" ]
+}
+
+create_virtual_device() {
+    [ -x "$vkms_helper" ] || return 31
+    sudo -n "$vkms_helper" create >/dev/null || return 32
+
+    i=0
+    while [ "$i" -lt 50 ]; do
+        virtual_present && return 0
+        sleep 0.10
+        i=$((i + 1))
+    done
+    return 33
+}
+
+destroy_virtual_device() {
+    [ -x "$vkms_helper" ] || return 31
+    sudo -n "$vkms_helper" destroy >/dev/null || return 34
+
+    i=0
+    while [ "$i" -lt 50 ]; do
+        virtual_present || return 0
+        sleep 0.10
+        i=$((i + 1))
+    done
+    return 35
 }
 
 available_virtual_modes_raw() {
@@ -360,9 +440,7 @@ start_sunshine() {
 
     attempt=1
     while [ "$attempt" -le 3 ]; do
-        if launch_sunshine_once; then
-            return 0
-        fi
+        launch_sunshine_once && return 0
         rc=$?
         stop_sunshine
         [ "$rc" -eq 23 ] || [ "$rc" -eq 24 ] || return "$rc"
@@ -381,45 +459,79 @@ apply_mode() {
     niri msg output "$virtual_output" mode "$mode" >/dev/null 2>&1 || return 28
 }
 
+disable_virtual() {
+    virtual_present || return 0
+    niri msg output "$virtual_output" off >/dev/null 2>&1 || return 30
+    i=0
+    while [ "$i" -lt 20 ]; do
+        [ "$(virtual_state)" != "on" ] && return 0
+        sleep 0.10
+        i=$((i + 1))
+    done
+    return 30
+}
+
+rollback_virtual_start() {
+    rc="$1"
+    stop_sunshine
+    disable_virtual || true
+    destroy_virtual_device || true
+    printf '%s\n' off > "$state_file"
+    return "$rc"
+}
+
 start_virtual() {
     primary="${1:-eDP-1}"
     mode="$(desired_mode)"
 
-    virtual_present || return 20
+    # Publish intent before enabling the output. DMS may recreate plugin
+    # instances as soon as the Wayland output appears.
+    printf '%s\n' on > "$state_file"
 
-    niri msg output "$virtual_output" on >/dev/null 2>&1 || return 22
-    if ! apply_mode "$mode"; then
+    create_virtual_device || {
         rc=$?
-        niri msg output "$virtual_output" off >/dev/null 2>&1 || true
+        printf '%s\n' off > "$state_file"
         return "$rc"
-    fi
+    }
+
+    niri msg output "$virtual_output" on >/dev/null 2>&1 || {
+        rollback_virtual_start 22
+        return $?
+    }
+    apply_mode "$mode" || {
+        rc=$?
+        rollback_virtual_start "$rc"
+        return $?
+    }
     position_virtual_right_of "$primary"
 
     wait_virtual_ready || {
-        niri msg output "$virtual_output" off >/dev/null 2>&1 || true
-        return 25
+        rollback_virtual_start 25
+        return $?
     }
 
-    if ! start_sunshine; then
+    start_sunshine || {
         rc=$?
-        niri msg output "$virtual_output" off >/dev/null 2>&1 || true
-        return "$rc"
-    fi
+        rollback_virtual_start "$rc"
+        return $?
+    }
 
     printf '%s\n' on > "$state_file"
 }
 
 stop_virtual() {
-    stop_sunshine
-    if virtual_present; then
-        niri msg output "$virtual_output" off >/dev/null 2>&1 || true
-    fi
+    # Publish OFF before hot-removing the connector; DMS may recreate this
+    # plugin instance while processing the output removal.
     printf '%s\n' off > "$state_file"
+    stop_sunshine
+    disable_virtual
+    destroy_virtual_device
 }
 
 set_virtual_mode() {
     mode="$1"
     primary="${2:-eDP-1}"
+    old_mode="$(desired_mode)"
 
     virtual_present || return 20
     valid_mode_format "$mode" || return 26
@@ -432,20 +544,32 @@ set_virtual_mode() {
     fi
 
     stop_sunshine
-    if ! apply_mode "$mode"; then
+    apply_mode "$mode" || {
         rc=$?
         start_sunshine || true
         return "$rc"
-    fi
+    }
 
-    persist_mode "$mode"
     position_virtual_right_of "$primary"
-    wait_virtual_ready || return 25
-    start_sunshine
+    wait_virtual_ready || {
+        apply_mode "$old_mode" || true
+        position_virtual_right_of "$primary"
+        start_sunshine || true
+        return 25
+    }
+    start_sunshine || {
+        rc=$?
+        apply_mode "$old_mode" || true
+        position_virtual_right_of "$primary"
+        start_sunshine || true
+        return "$rc"
+    }
+    persist_mode "$mode"
 }
 
 set_virtual_audio() {
     mode="$1"
+    old_mode="$(desired_audio_mode)"
     valid_audio_mode "$mode" || return 29
 
     persist_audio_mode "$mode"
@@ -454,7 +578,13 @@ set_virtual_audio() {
     # Si el monitor virtual está activo, reinicia Sunshine para aplicar
     # el cambio de audio sin apagar Virtual-1.
     if [ "$(virtual_state)" = "on" ]; then
-        start_sunshine
+        start_sunshine || {
+            rc=$?
+            persist_audio_mode "$old_mode"
+            configure_sunshine
+            start_sunshine || true
+            return "$rc"
+        }
     fi
 }
 
@@ -481,12 +611,18 @@ init_virtual() {
 
     case "$state" in
         on)
+            if [ "$(virtual_state)" = "on" ] && sunshine_running \
+                && [ "$(selected_capture)" = virtual ]; then
+                return 0
+            fi
             start_virtual "$primary" || true
             ;;
         *)
-            stop_sunshine
-            if [ "$(virtual_state)" = "on" ]; then
-                niri msg output "$virtual_output" off >/dev/null 2>&1 || true
+            if vkms_managed; then
+                stop_virtual || true
+            else
+                stop_sunshine
+                disable_virtual || true
             fi
             ;;
     esac
@@ -507,6 +643,8 @@ print_status() {
     present=0
     enabled=0
     sunshine=0
+    managed=0
+    lifecycle=ERROR
 
     mode="$(desired_mode)"
     # shellcheck disable=SC2086
@@ -518,6 +656,12 @@ print_status() {
     virtual_present && present=1
     [ "$(virtual_state)" = "on" ] && enabled=1
     sunshine_running && sunshine=1
+    vkms_info="$(vkms_status 2>/dev/null || true)"
+    if [ -n "$vkms_info" ]; then
+        [ "$(printf '%s\n' "$vkms_info" | sed -n 's/^owned=//p' | sed -n '1p')" = 1 ] && managed=1
+        lifecycle="$(printf '%s\n' "$vkms_info" | sed -n 's/^state=//p' | sed -n '1p')"
+        [ -n "$lifecycle" ] || lifecycle=ERROR
+    fi
 
     if [ "$enabled" -eq 1 ] && command -v dms >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
         row="$(
@@ -538,6 +682,8 @@ print_status() {
     printf 'present=%s\n' "$present"
     printf 'enabled=%s\n' "$enabled"
     printf 'sunshine=%s\n' "$sunshine"
+    printf 'managed=%s\n' "$managed"
+    printf 'lifecycle=%s\n' "$lifecycle"
     printf 'width=%s\n' "$width"
     printf 'height=%s\n' "$height"
     printf 'refresh=%s\n' "$refresh"
@@ -548,20 +694,25 @@ print_status() {
 
 case "${1:-}" in
     start)
+        lock_operation
         start_virtual "${2:-eDP-1}"
         ;;
     stop)
+        lock_operation
         stop_virtual
         ;;
     init)
+        lock_operation
         init_virtual "${2:-eDP-1}"
         ;;
     set-mode)
         [ "$#" -ge 2 ] || { echo "missing mode" >&2; exit 2; }
+        lock_operation
         set_virtual_mode "$2" "${3:-eDP-1}"
         ;;
     set-audio)
         [ "$#" -ge 2 ] || { echo "missing audio mode" >&2; exit 2; }
+        lock_operation
         set_virtual_audio "$2"
         ;;
     modes)

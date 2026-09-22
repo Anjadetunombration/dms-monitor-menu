@@ -1,8 +1,8 @@
 {
   "id": "monitorMenu",
   "name": "Monitor Menu",
-  "description": "Gestión de monitores físicos y virtuales para DMS/Niri",
-  "version": "0.7.1",
+  "description": "Gestión de monitores físicos, virtuales y red adaptable para DMS/Niri",
+  "version": "0.8.0",
   "author": "Community",
   "type": "widget",
   "capabilities": [

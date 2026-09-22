@@ -19,6 +19,13 @@ PluginComponent {
     property bool modesExpanded: false
     property bool resolutionExpanded: false
     property bool audioExpanded: false
+    property bool networkExpanded: false
+    property bool privateLanExpanded: false
+    property bool networkHostVisible: false
+    property bool networkPasswordVisible: false
+    property bool networkBusy: false
+    property bool networkStatusBusy: false
+    property int networkSecretGeneration: 0
     property bool initializedVirtual: false
     property bool wlMirrorInstalled: false
     property bool mirrorActive: false
@@ -33,7 +40,9 @@ PluginComponent {
     }
 
     property bool virtualPresent: false
+    property bool virtualReady: false
     property bool virtualEnabled: false
+    property string virtualLifecycle: "ERROR"
     property bool virtualSunshine: false
     property int virtualWidth: 1920
     property int virtualHeight: 1080
@@ -41,6 +50,39 @@ PluginComponent {
     property string virtualCapture: "unknown"
     property string virtualAudioMode: "local"
     property var virtualModes: []
+
+    property bool networkReady: false
+    property bool networkEnabled: false
+    property bool privateLanActive: false
+    property string networkMode: "auto"
+    property string networkEffectiveMode: "stopped"
+    property string networkState: "STOPPED"
+    property string networkBand: ""
+    property string networkChannel: ""
+    property string networkInternet: "unavailable"
+    property int networkClients: 0
+    property string networkHostAddress: ""
+    property string networkPrivateSsid: ""
+    property string networkPrivatePassword: ""
+    readonly property string networkSystemHelper: "/usr/local/libexec/monitor-menu-network"
+    readonly property string processNamespace: "monitorMenu."
+        + Date.now().toString(36) + "." + Math.random().toString(36).slice(2)
+    readonly property bool virtualInteractive: virtualPresent
+        && virtualEnabled
+        && virtualLifecycle === "ACTIVE"
+        && !busy
+    readonly property bool virtualControlsVisible: virtualReady || virtualPresent
+
+    function runCommand(id, command, callback, debounceMs, timeoutMs) {
+        Proc.runCommand(
+            processNamespace + "." + id,
+            command,
+            callback,
+            debounceMs,
+            timeoutMs,
+            root
+        )
+    }
 
     readonly property string mirrorHelperPath: pluginService
         ? pluginService.getPluginPath(pluginId) + "/mirror-helper.sh"
@@ -60,6 +102,7 @@ PluginComponent {
     }
 
     readonly property bool hasSecondaryOutput: physicalOutputs.length > 1 || virtualPresent
+    readonly property bool canConfigureSecondary: hasSecondaryOutput || virtualReady
 
     readonly property int enabledSecondaryCount: {
         let count = 0
@@ -122,7 +165,7 @@ PluginComponent {
     }
 
     function refreshOutputs() {
-        Proc.runCommand(
+        root.runCommand(
             "monitorMenu.randr",
             ["dms", "randr", "--json"],
             (stdout, exitCode) => {
@@ -161,25 +204,32 @@ PluginComponent {
         return status
     }
 
-    function refreshVirtualStatus() {
+    function refreshVirtualStatus(done, processId) {
         if (!virtualHelperPath)
             return
 
-        Proc.runCommand(
-            "monitorMenu.virtualStatus",
+        root.runCommand(
+            processId || "monitorMenu.virtualStatus",
             ["sh", virtualHelperPath, "status"],
             (stdout, exitCode) => {
-                if (exitCode !== 0)
+                if (exitCode !== 0) {
+                    if (typeof done === "function")
+                        done(false)
                     return
+                }
                 const s = root.parseStatus(stdout)
                 root.virtualPresent = s.present === "1"
+                root.virtualReady = s.managed === "1"
                 root.virtualEnabled = s.enabled === "1"
+                root.virtualLifecycle = s.lifecycle || "ERROR"
                 root.virtualSunshine = s.sunshine === "1"
                 root.virtualWidth = parseInt(s.width || "1920")
                 root.virtualHeight = parseInt(s.height || "1080")
                 root.virtualRefresh = parseInt(s.refresh || "60000")
                 root.virtualCapture = s.capture || "unknown"
                 root.virtualAudioMode = s.audio === "virtual" ? "virtual" : "local"
+                if (typeof done === "function")
+                    done(true, s)
             },
             100
         )
@@ -189,13 +239,198 @@ PluginComponent {
         if (!virtualHelperPath)
             return
 
-        Proc.runCommand(
+        root.busy = true
+        root.runCommand(
             "monitorMenu.virtualInit",
             ["sh", virtualHelperPath, "init", primaryOutput],
             (stdout, exitCode) => {
-                root.refreshVirtualStatus()
+                root.refreshVirtualStatus((ok, status) => {
+                    if (!ok) {
+                        root.busy = false
+                        return
+                    }
+                    // La reconciliación de red tiene su propio flag y no debe
+                    // bloquear controles de pantalla ya inicializados.
+                    root.busy = false
+                    root.runCommand(
+                        "monitorMenu.networkReconcileStatus",
+                        ["sudo", "-n", networkSystemHelper, "status"],
+                        (networkOut, networkExit) => {
+                            if (networkExit !== 0) {
+                                root.networkReady = false
+                                root.lastError = "Configura la red con setup-network.sh"
+                                return
+                            }
+                            const networkStatus = root.parseStatus(networkOut)
+                            root.networkMode = networkStatus.mode || "auto"
+                            const finishInit = () => {}
+                            if (status.enabled === "1")
+                                root.startNetwork(finishInit)
+                            else
+                                root.stopNetwork(finishInit)
+                        },
+                        0,
+                        10000
+                    )
+                }, "monitorMenu.virtualReconcile")
                 root.refreshOutputs()
+            },
+            0,
+            25000
+        )
+    }
+
+    function closePrivateLan() {
+        root.networkSecretGeneration++
+        root.privateLanExpanded = false
+        root.networkHostVisible = false
+        root.networkPasswordVisible = false
+        root.networkPrivatePassword = ""
+    }
+
+    function networkModeLabel(mode) {
+        if (mode === "current") return "Red actual"
+        if (mode === "bypass") return "Bypass"
+        return "Automático"
+    }
+
+    function networkDetail() {
+        if (!networkReady)
+            return "Ejecuta setup-network.sh"
+        if (!networkEnabled)
+            return "Se activará con el monitor virtual"
+        if (networkState === "CONNECTING")
+            return "Adaptándose a la nueva red"
+        if (networkEffectiveMode === "current")
+            return "Usando la red disponible"
+        if (privateLanActive)
+            return "LAN privada activa"
+        return "Preparando red"
+    }
+
+    function privateLanDetail() {
+        let text = networkPrivateSsid || "LAN privada"
+        if (networkBand)
+            text += " · " + networkBand + " GHz"
+        if (networkChannel)
+            text += " · canal " + networkChannel
+        text += " · " + networkClients + (networkClients === 1 ? " dispositivo" : " dispositivos")
+        if (networkInternet === "shared")
+            text += " · Internet"
+        return text
+    }
+
+    function hiddenValue(value, visible) {
+        if (!visible)
+            return "••••••••"
+        return value || "No disponible"
+    }
+
+    function refreshNetworkStatus(done) {
+        if (networkStatusBusy) {
+            if (typeof done === "function")
+                done(false)
+            return
+        }
+        root.networkStatusBusy = true
+        root.runCommand(
+            "monitorMenu.networkStatus",
+            ["sudo", "-n", networkSystemHelper, "status"],
+            (stdout, exitCode) => {
+                root.networkStatusBusy = false
+                if (exitCode !== 0) {
+                    root.networkReady = false
+                    root.networkEnabled = false
+                    root.privateLanActive = false
+                    root.networkEffectiveMode = "stopped"
+                    root.closePrivateLan()
+                    if (typeof done === "function") done(false)
+                    return
+                }
+                const s = root.parseStatus(stdout)
+                root.networkReady = true
+                root.networkEnabled = s.enabled === "1"
+                root.privateLanActive = s.lan_active === "1"
+                root.networkMode = s.mode || "auto"
+                root.networkEffectiveMode = s.effective_mode || "stopped"
+                root.networkState = s.state || "STOPPED"
+                root.networkBand = s.band || ""
+                root.networkChannel = s.channel || ""
+                root.networkInternet = s.internet || "unavailable"
+                root.networkClients = parseInt(s.clients || "0")
+                root.networkPrivateSsid = s.ssid || ""
+                if (!root.privateLanActive) {
+                    root.closePrivateLan()
+                    root.networkHostAddress = ""
+                }
+                if (typeof done === "function") done(true)
+            },
+            100
+        )
+    }
+
+    function runNetwork(action, mode, done) {
+        if (networkBusy) {
+            if (typeof done === "function") done(false)
+            return
+        }
+        root.networkBusy = true
+        const args = ["sudo", "-n", networkSystemHelper, action]
+        if (mode)
+            args.push(mode)
+        root.runCommand(
+            "monitorMenu.networkAction",
+            args,
+            (stdout, exitCode) => {
+                root.networkBusy = false
+                root.refreshNetworkStatus()
+                if (typeof done === "function") done(exitCode === 0)
+            },
+            0,
+            15000
+        )
+    }
+
+    function setNetworkMode(mode) {
+        if (mode !== "auto" && mode !== "current" && mode !== "bypass")
+            return
+        root.lastError = ""
+        root.runNetwork(root.virtualEnabled ? "start" : "configure", mode, ok => {
+            if (!ok) {
+                root.lastError = "No se pudo aplicar el modo de red"
+                return
             }
+            root.networkMode = mode
+            root.networkExpanded = false
+        })
+    }
+
+    function startNetwork(done) {
+        root.runNetwork("start", root.networkMode, ok => {
+            if (!ok)
+                root.lastError = "Configura la red con setup-network.sh"
+            if (typeof done === "function") done(ok)
+        })
+    }
+
+    function stopNetwork(done) {
+        const cleanupExpected = root.networkEnabled
+        root.runNetwork("stop", "", ok => {
+            if (!ok && cleanupExpected)
+                root.lastError = "No se pudo limpiar la red privada"
+            if (typeof done === "function") done(ok)
+        })
+    }
+
+    function fetchNetworkSecret(field, done) {
+        root.runCommand(
+            "monitorMenu.networkSecret." + field,
+            ["sudo", "-n", networkSystemHelper, "secret", field],
+            (stdout, exitCode) => {
+                const value = exitCode === 0 ? stdout.trim() : ""
+                if (typeof done === "function") done(exitCode === 0, value)
+            },
+            100
         )
     }
 
@@ -203,7 +438,7 @@ PluginComponent {
         if (!virtualHelperPath)
             return
 
-        Proc.runCommand(
+        root.runCommand(
             "monitorMenu.virtualModes",
             ["sh", virtualHelperPath, "modes"],
             (stdout, exitCode) => {
@@ -235,7 +470,7 @@ PluginComponent {
     }
 
     function checkWlMirror() {
-        Proc.runCommand(
+        root.runCommand(
             "monitorMenu.wlMirrorCheck",
             ["sh", "-c", "command -v wl-mirror >/dev/null 2>&1"],
             (stdout, exitCode) => root.wlMirrorInstalled = (exitCode === 0),
@@ -247,7 +482,7 @@ PluginComponent {
         if (!mirrorHelperPath)
             return
 
-        Proc.runCommand(
+        root.runCommand(
             "monitorMenu.mirrorStatus",
             ["sh", mirrorHelperPath, "status"],
             (stdout, exitCode) => {
@@ -268,8 +503,14 @@ PluginComponent {
     }
 
     function virtualDetail() {
+        if (!virtualReady)
+            return "Ejecuta setup-vkms.sh"
+        if (virtualLifecycle === "CREATING")
+            return "Creando " + virtualOutput + "…"
+        if (virtualLifecycle === "DESTROYING")
+            return "Destruyendo " + virtualOutput + "…"
         if (!virtualPresent)
-            return "VKMS no cargado"
+            return "Apagado · VKMS descargado"
         if (virtualEnabled && !virtualSunshine)
             return virtualOutput + " · " + virtualWidth + "×" + virtualHeight + " · sin Sunshine"
         if (virtualEnabled && virtualCapture === "wrong")
@@ -286,7 +527,7 @@ PluginComponent {
             return
         }
 
-        Proc.runCommand(
+        root.runCommand(
             "monitorMenu.mirrorStop",
             ["sh", mirrorHelperPath, "stop"],
             (stdout, exitCode) => {
@@ -304,7 +545,7 @@ PluginComponent {
         root.lastError = ""
 
         const performToggle = () => {
-            Proc.runCommand(
+            root.runCommand(
                 "monitorMenu.outputToggle",
                 ["niri", "msg", "output", output.name, output.enabled ? "off" : "on"],
                 (stdout, exitCode) => {
@@ -329,7 +570,7 @@ PluginComponent {
         root.busy = true
         root.lastError = ""
 
-        Proc.runCommand(
+        root.runCommand(
             "monitorMenu.virtualModeSet",
             ["sh", virtualHelperPath, "set-mode", mode, primaryOutput],
             (stdout, exitCode) => {
@@ -341,7 +582,9 @@ PluginComponent {
                 else
                     root.resolutionExpanded = false
                 refreshAfterAction.restart()
-            }
+            },
+            0,
+            25000
         )
     }
 
@@ -354,7 +597,7 @@ PluginComponent {
         root.busy = true
         root.lastError = ""
 
-        Proc.runCommand(
+        root.runCommand(
             "monitorMenu.virtualAudioSet",
             ["sh", virtualHelperPath, "set-audio", mode],
             (stdout, exitCode) => {
@@ -368,7 +611,9 @@ PluginComponent {
                 else
                     root.audioExpanded = false
                 refreshAfterAction.restart()
-            }
+            },
+            0,
+            25000
         )
     }
 
@@ -376,28 +621,47 @@ PluginComponent {
         if (busy)
             return
 
-        if (!virtualPresent) {
-            root.lastError = "VKMS no está cargado; ejecuta setup-vkms.sh una vez"
+        if (!virtualReady) {
+            root.lastError = "Configura VKMS con setup-vkms.sh"
             return
         }
 
+        const turningOn = !virtualEnabled
         root.busy = true
         root.lastError = ""
 
-        Proc.runCommand(
-            "monitorMenu.virtualToggle",
-            ["sh", virtualHelperPath, virtualEnabled ? "stop" : "start", primaryOutput],
-            (stdout, exitCode) => {
-                root.busy = false
-                if (exitCode === 20)
-                    root.lastError = "No se encontró " + virtualOutput + " (VKMS)"
-                else if (exitCode === 127)
-                    root.lastError = "No se encontró Sunshine"
-                else if (exitCode !== 0)
-                    root.lastError = "No se pudo cambiar el monitor virtual"
-                refreshAfterAction.restart()
-            }
-        )
+        const changeVirtual = () => {
+            root.runCommand(
+                "monitorMenu.virtualToggle",
+                ["sh", virtualHelperPath, turningOn ? "start" : "stop", primaryOutput],
+                (stdout, exitCode) => {
+                    if (exitCode === 31)
+                        root.lastError = "Configura VKMS con setup-vkms.sh"
+                    else if (exitCode >= 32 && exitCode <= 35)
+                        root.lastError = "No se pudo crear o destruir VKMS"
+                    else if (exitCode === 127)
+                        root.lastError = "No se encontró Sunshine"
+                    else if (exitCode !== 0)
+                        root.lastError = "No se pudo cambiar el monitor virtual"
+
+                    if (exitCode === 0 && turningOn) {
+                        root.busy = false
+                        refreshAfterAction.restart()
+                        root.startNetwork()
+                    } else {
+                        root.busy = false
+                        refreshAfterAction.restart()
+                    }
+                },
+                0,
+                25000
+            )
+        }
+
+        if (turningOn)
+            changeVirtual()
+        else
+            root.stopNetwork(changeVirtual)
     }
 
     function onlyPrimary() {
@@ -415,22 +679,27 @@ PluginComponent {
             }
 
             const finish = () => {
+                root.busy = false
                 root.modesExpanded = false
                 refreshAfterAction.restart()
             }
 
-            if (virtualEnabled && virtualHelperPath) {
-                Proc.runCommand(
-                    "monitorMenu.modeVirtualStop",
-                    ["sh", virtualHelperPath, "stop"],
-                    (stdout, exitCode) => {
-                        if (exitCode !== 0)
-                            root.lastError = "No se pudo apagar el monitor virtual"
-                        finish()
-                    }
-                )
+            if ((virtualEnabled || virtualPresent) && virtualHelperPath) {
+                root.stopNetwork(() => {
+                    root.runCommand(
+                        "monitorMenu.modeVirtualStop",
+                        ["sh", virtualHelperPath, "stop"],
+                        (stdout, exitCode) => {
+                            if (exitCode !== 0)
+                                root.lastError = "No se pudo apagar el monitor virtual"
+                            finish()
+                        },
+                        0,
+                        15000
+                    )
+                })
             } else {
-                finish()
+                root.stopNetwork(finish)
             }
         })
     }
@@ -450,32 +719,41 @@ PluginComponent {
             }
 
             const finish = () => {
+                root.busy = false
                 root.modesExpanded = false
                 refreshAfterAction.restart()
             }
 
-            if (virtualPresent && !virtualEnabled && virtualHelperPath) {
-                Proc.runCommand(
+            if (virtualReady && !virtualEnabled && virtualHelperPath) {
+                root.runCommand(
                     "monitorMenu.modeVirtualStart",
                     ["sh", virtualHelperPath, "start", primaryOutput],
                     (stdout, exitCode) => {
-                        if (exitCode === 20)
-                            root.lastError = "No se encontró " + virtualOutput + " (VKMS)"
+                        if (exitCode === 31)
+                            root.lastError = "Configura VKMS con setup-vkms.sh"
+                        else if (exitCode >= 32 && exitCode <= 35)
+                            root.lastError = "No se pudo crear VKMS"
                         else if (exitCode === 127)
                             root.lastError = "No se encontró Sunshine"
                         else if (exitCode !== 0)
                             root.lastError = "No se pudo encender el monitor virtual"
                         finish()
-                    }
+                        if (exitCode === 0)
+                            root.startNetwork()
+                    },
+                    0,
+                    25000
                 )
             } else {
+                if (virtualEnabled)
+                    root.startNetwork()
                 finish()
             }
         })
     }
 
     function duplicatePrimary() {
-        if (busy || !hasSecondaryOutput)
+        if (busy || !canConfigureSecondary)
             return
 
         if (!wlMirrorInstalled) {
@@ -493,7 +771,7 @@ PluginComponent {
             if (physicalOutputs[i].name !== primaryOutput)
                 targets.push(physicalOutputs[i].name)
         }
-        if (virtualPresent)
+        if (virtualPresent || virtualReady)
             targets.push(virtualOutput)
 
         if (targets.length === 0)
@@ -507,7 +785,7 @@ PluginComponent {
             for (let i = 0; i < targets.length; ++i)
                 args.push(targets[i])
 
-            Proc.runCommand(
+            root.runCommand(
                 "monitorMenu.mirrorStart",
                 args,
                 (stdout, exitCode) => {
@@ -524,19 +802,23 @@ PluginComponent {
                     }
 
                     refreshAfterAction.restart()
-                }
+                },
+                0,
+                15000
             )
         }
 
-        if (virtualPresent && !virtualEnabled && virtualHelperPath) {
-            Proc.runCommand(
+        if (virtualReady && !virtualEnabled && virtualHelperPath) {
+            root.runCommand(
                 "monitorMenu.duplicateVirtualStart",
                 ["sh", virtualHelperPath, "start", primaryOutput],
                 (stdout, exitCode) => {
                     if (exitCode !== 0) {
                         root.busy = false
-                        if (exitCode === 20)
-                            root.lastError = "No se encontró " + virtualOutput + " (VKMS)"
+                        if (exitCode === 31)
+                            root.lastError = "Configura VKMS con setup-vkms.sh"
+                        else if (exitCode >= 32 && exitCode <= 35)
+                            root.lastError = "No se pudo crear VKMS"
                         else if (exitCode === 127)
                             root.lastError = "No se encontró Sunshine"
                         else
@@ -544,12 +826,25 @@ PluginComponent {
                         refreshAfterAction.restart()
                         return
                     }
+                    root.startNetwork()
                     startMirror()
-                }
+                },
+                0,
+                25000
             )
         } else {
+            if (virtualEnabled)
+                root.startNetwork()
             startMirror()
         }
+    }
+
+    function refreshVisibleState() {
+        root.refreshOutputs()
+        root.checkMirrorState()
+        root.refreshVirtualStatus()
+        root.refreshVirtualModes()
+        root.refreshNetworkStatus()
     }
 
     Component.onCompleted: {
@@ -560,38 +855,16 @@ PluginComponent {
         checkMirrorState()
     }
 
-    // Estado/hotplug sin reiniciar DMS.
-    Timer {
-        interval: 1000
-        repeat: true
-        running: true
-        onTriggered: {
-            root.refreshOutputs()
-            root.checkMirrorState()
-            root.refreshVirtualStatus()
-        }
-    }
-
-    Timer {
-        interval: 10000
-        repeat: true
-        running: true
-        onTriggered: {
-            root.checkWlMirror()
-            root.refreshVirtualModes()
-        }
-    }
-
     Timer {
         id: refreshAfterAction
         interval: 750
         repeat: false
         onTriggered: {
-            root.busy = false
             root.refreshOutputs()
             root.checkMirrorState()
             root.refreshVirtualStatus()
             root.refreshVirtualModes()
+            root.refreshNetworkStatus()
         }
     }
 
@@ -601,12 +874,16 @@ PluginComponent {
         165
         + root.physicalOutputs.length * 66
         + 66
-        + (root.virtualPresent ? 56 : 0)
-        + (root.virtualPresent && root.resolutionExpanded ? Math.max(1, root.virtualModes.length) * 46 : 0)
-        + (root.virtualPresent ? 56 : 0)
-        + (root.virtualPresent && root.audioExpanded ? 92 : 0)
-        + (root.hasSecondaryOutput ? 56 : 0)
-        + (root.hasSecondaryOutput && root.modesExpanded ? 144 : 0)
+        + (root.virtualControlsVisible ? 56 : 0)
+        + (root.virtualInteractive && root.resolutionExpanded ? Math.max(1, root.virtualModes.length) * 46 : 0)
+        + (root.virtualControlsVisible ? 56 : 0)
+        + (root.virtualInteractive && root.audioExpanded ? 92 : 0)
+        + (root.virtualPresent ? 66 : 0)
+        + (root.virtualPresent && root.networkExpanded ? 138 : 0)
+        + (root.virtualPresent && root.privateLanActive ? 66 : 0)
+        + (root.virtualPresent && root.privateLanActive && root.privateLanExpanded ? 92 : 0)
+        + (root.canConfigureSecondary ? 56 : 0)
+        + (root.canConfigureSecondary && root.modesExpanded ? 144 : 0)
     )
 
     horizontalBarPill: Component {
@@ -649,8 +926,61 @@ PluginComponent {
 
     popoutContent: Component {
         PopoutComponent {
+            id: popout
             headerText: "Pantallas"
             detailsText: root.headerDetails()
+
+            property string copiedField: ""
+            Component.onDestruction: root.closePrivateLan()
+
+            Connections {
+                target: popout.parentPopout
+                enabled: popout.parentPopout !== null
+
+                function onShouldBeVisibleChanged() {
+                    if (popout.parentPopout.shouldBeVisible)
+                        root.refreshVisibleState()
+                }
+            }
+
+            // Keep transient network and display state current only while the menu is open.
+            Timer {
+                interval: 5000
+                repeat: true
+                running: popout.parentPopout?.shouldBeVisible ?? false
+                onTriggered: root.refreshVisibleState()
+            }
+
+            TextInput {
+                id: clipboardBuffer
+                width: 1
+                height: 1
+                opacity: 0
+                text: ""
+            }
+
+            Timer {
+                id: copyFeedbackTimer
+                interval: 1400
+                repeat: false
+                onTriggered: {
+                    popout.copiedField = ""
+                    clipboardBuffer.text = ""
+                    if (!root.networkPasswordVisible)
+                        root.networkPrivatePassword = ""
+                }
+            }
+
+            function copyValue(value, field) {
+                if (!value)
+                    return
+                clipboardBuffer.text = value
+                clipboardBuffer.selectAll()
+                clipboardBuffer.copy()
+                clipboardBuffer.deselect()
+                popout.copiedField = field
+                copyFeedbackTimer.restart()
+            }
 
             Column {
                 width: parent.width
@@ -731,7 +1061,7 @@ PluginComponent {
                 }
 
                 StyledRect {
-                    visible: root.hasSecondaryOutput
+                    visible: root.canConfigureSecondary
                     width: parent.width
                     height: 48
                     radius: Theme.cornerRadius
@@ -787,13 +1117,15 @@ PluginComponent {
                             if (root.modesExpanded) {
                                 root.resolutionExpanded = false
                                 root.audioExpanded = false
+                                root.networkExpanded = false
+                                root.closePrivateLan()
                             }
                         }
                     }
                 }
 
                 Column {
-                    visible: root.hasSecondaryOutput && root.modesExpanded
+                    visible: root.canConfigureSecondary && root.modesExpanded
                     width: parent.width
                     spacing: Theme.spacingXS
 
@@ -867,10 +1199,10 @@ PluginComponent {
                     width: parent.width
                     height: 58
                     radius: Theme.cornerRadius
-                    color: virtualMouse.containsMouse && root.virtualPresent
+                    color: virtualMouse.containsMouse && root.virtualReady
                            ? Theme.surfaceContainerHighest
                            : Theme.surfaceContainerHigh
-                    opacity: root.virtualPresent ? 1.0 : 0.65
+                    opacity: root.virtualReady ? 1.0 : 0.65
 
                     DankIcon {
                         id: virtualIcon
@@ -921,21 +1253,21 @@ PluginComponent {
                         id: virtualMouse
                         anchors.fill: parent
                         hoverEnabled: true
-                        enabled: root.virtualPresent && !root.busy
+                        enabled: root.virtualReady && !root.busy
                         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                         onClicked: root.toggleVirtual()
                     }
                 }
 
                 StyledRect {
-                    visible: root.virtualPresent
+                    visible: root.virtualControlsVisible
                     width: parent.width
                     height: 48
                     radius: Theme.cornerRadius
                     color: resolutionMouse.containsMouse
                            ? Theme.surfaceContainerHighest
                            : Theme.surfaceContainerHigh
-                    opacity: root.busy ? 0.65 : 1.0
+                    opacity: root.virtualInteractive ? 1.0 : 0.55
 
                     DankIcon {
                         id: resolutionIcon
@@ -979,20 +1311,22 @@ PluginComponent {
                         id: resolutionMouse
                         anchors.fill: parent
                         hoverEnabled: true
-                        enabled: !root.busy && root.virtualModes.length > 0
+                        enabled: root.virtualInteractive && root.virtualModes.length > 0
                         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                         onClicked: {
                             root.resolutionExpanded = !root.resolutionExpanded
                             if (root.resolutionExpanded) {
                                 root.modesExpanded = false
                                 root.audioExpanded = false
+                                root.networkExpanded = false
+                                root.closePrivateLan()
                             }
                         }
                     }
                 }
 
                 Column {
-                    visible: root.virtualPresent && root.resolutionExpanded
+                    visible: root.virtualInteractive && root.resolutionExpanded
                     width: parent.width
                     spacing: Theme.spacingXS
 
@@ -1055,14 +1389,14 @@ PluginComponent {
 
 
                 StyledRect {
-                    visible: root.virtualPresent
+                    visible: root.virtualControlsVisible
                     width: parent.width
                     height: 48
                     radius: Theme.cornerRadius
                     color: audioMouse.containsMouse
                            ? Theme.surfaceContainerHighest
                            : Theme.surfaceContainerHigh
-                    opacity: root.busy ? 0.65 : 1.0
+                    opacity: root.virtualInteractive ? 1.0 : 0.55
 
                     DankIcon {
                         id: audioIcon
@@ -1106,20 +1440,22 @@ PluginComponent {
                         id: audioMouse
                         anchors.fill: parent
                         hoverEnabled: true
-                        enabled: !root.busy
+                        enabled: root.virtualInteractive
                         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                         onClicked: {
                             root.audioExpanded = !root.audioExpanded
                             if (root.audioExpanded) {
                                 root.resolutionExpanded = false
                                 root.modesExpanded = false
+                                root.networkExpanded = false
+                                root.closePrivateLan()
                             }
                         }
                     }
                 }
 
                 Column {
-                    visible: root.virtualPresent && root.audioExpanded
+                    visible: root.virtualInteractive && root.audioExpanded
                     width: parent.width
                     spacing: Theme.spacingXS
 
@@ -1188,6 +1524,313 @@ PluginComponent {
                                 enabled: !root.busy && !selected
                                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onClicked: root.setVirtualAudio(audioData.mode)
+                            }
+                        }
+                    }
+                }
+
+                StyledRect {
+                    visible: root.virtualPresent
+                    width: parent.width
+                    height: 58
+                    radius: Theme.cornerRadius
+                    color: networkMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+                    opacity: root.networkBusy ? 0.65 : 1.0
+
+                    DankIcon {
+                        id: networkIcon
+                        anchors.left: parent.left
+                        anchors.leftMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: root.privateLanActive ? "lan" : "wifi"
+                        size: Theme.iconSize
+                        color: root.networkEnabled ? Theme.primary : Theme.surfaceText
+                    }
+
+                    Column {
+                        anchors.left: networkIcon.right
+                        anchors.leftMargin: Theme.spacingM
+                        anchors.right: networkModeRow.left
+                        anchors.rightMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+
+                        StyledText {
+                            width: parent.width
+                            text: "Modo de red"
+                            color: Theme.surfaceText
+                            font.pixelSize: Theme.fontSizeMedium
+                            elide: Text.ElideRight
+                        }
+
+                        StyledText {
+                            width: parent.width
+                            text: root.networkDetail()
+                            color: Theme.surfaceVariantText
+                            font.pixelSize: Theme.fontSizeSmall
+                            elide: Text.ElideRight
+                        }
+                    }
+
+                    Row {
+                        id: networkModeRow
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.spacingXS
+
+                        StyledText {
+                            text: root.networkModeLabel(root.networkMode)
+                            color: Theme.surfaceVariantText
+                            font.pixelSize: Theme.fontSizeSmall
+                        }
+
+                        DankIcon {
+                            name: root.networkExpanded ? "expand_less" : "chevron_right"
+                            size: Theme.iconSizeSmall
+                            color: Theme.surfaceVariantText
+                        }
+                    }
+
+                    MouseArea {
+                        id: networkMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        enabled: !root.busy && !root.networkBusy
+                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: {
+                            root.networkExpanded = !root.networkExpanded
+                            if (root.networkExpanded) {
+                                root.modesExpanded = false
+                                root.resolutionExpanded = false
+                                root.audioExpanded = false
+                                root.closePrivateLan()
+                            }
+                        }
+                    }
+                }
+
+                Column {
+                    visible: root.virtualPresent && root.networkExpanded
+                    width: parent.width
+                    spacing: Theme.spacingXS
+
+                    Repeater {
+                        model: [
+                            { mode: "auto", label: "Automático", detail: "Se adapta a la red disponible", icon: "sync" },
+                            { mode: "current", label: "Red actual", detail: "Usa la red donde ya estás conectado", icon: "wifi" },
+                            { mode: "bypass", label: "Bypass", detail: "Crea una conexión privada directa", icon: "lan" }
+                        ]
+
+                        delegate: StyledRect {
+                            property var networkData: modelData
+                            readonly property bool selected: root.networkMode === networkData.mode
+                            width: parent.width
+                            height: 42
+                            radius: Theme.cornerRadius
+                            color: networkOptionMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+                            opacity: root.networkReady ? 1.0 : 0.65
+
+                            DankIcon {
+                                id: networkCheck
+                                anchors.left: parent.left
+                                anchors.leftMargin: Theme.spacingM
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: selected ? "check_circle" : networkData.icon
+                                size: Theme.iconSizeSmall
+                                color: selected ? Theme.primary : Theme.surfaceVariantText
+                            }
+
+                            Column {
+                                anchors.left: networkCheck.right
+                                anchors.leftMargin: Theme.spacingM
+                                anchors.verticalCenter: parent.verticalCenter
+                                StyledText {
+                                    text: networkData.label
+                                    color: selected ? Theme.primary : Theme.surfaceText
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+                                StyledText {
+                                    text: networkData.detail
+                                    color: Theme.surfaceVariantText
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+                            }
+
+                            MouseArea {
+                                id: networkOptionMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: root.networkReady && !root.busy && !root.networkBusy && !selected
+                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onClicked: root.setNetworkMode(networkData.mode)
+                            }
+                        }
+                    }
+                }
+
+                StyledRect {
+                    visible: root.virtualPresent && root.privateLanActive
+                    width: parent.width
+                    height: 58
+                    radius: Theme.cornerRadius
+                    color: privateLanMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+
+                    DankIcon {
+                        id: privateLanIcon
+                        anchors.left: parent.left
+                        anchors.leftMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: "lan"
+                        size: Theme.iconSize
+                        color: Theme.primary
+                    }
+
+                    Column {
+                        anchors.left: privateLanIcon.right
+                        anchors.leftMargin: Theme.spacingM
+                        anchors.right: privateLanRight.left
+                        anchors.rightMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+                        StyledText {
+                            text: "LAN privada"
+                            color: Theme.surfaceText
+                            font.pixelSize: Theme.fontSizeMedium
+                        }
+                        StyledText {
+                            width: parent.width
+                            text: root.privateLanDetail()
+                            color: Theme.surfaceVariantText
+                            font.pixelSize: Theme.fontSizeSmall
+                            elide: Text.ElideRight
+                        }
+                    }
+
+                    Row {
+                        id: privateLanRight
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.spacingXS
+                        StyledText {
+                            text: "Activa"
+                            color: Theme.primary
+                            font.pixelSize: Theme.fontSizeSmall
+                        }
+                        DankIcon {
+                            name: root.privateLanExpanded ? "expand_less" : "chevron_right"
+                            size: Theme.iconSizeSmall
+                            color: Theme.surfaceVariantText
+                        }
+                    }
+
+                    MouseArea {
+                        id: privateLanMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            root.privateLanExpanded = !root.privateLanExpanded
+                            root.networkExpanded = false
+                            if (!root.privateLanExpanded) {
+                                root.closePrivateLan()
+                            }
+                        }
+                    }
+                }
+
+                Column {
+                    visible: root.virtualPresent && root.privateLanActive && root.privateLanExpanded
+                    width: parent.width
+                    spacing: Theme.spacingXS
+
+                    Repeater {
+                        model: [
+                            { field: "host", label: "Host", icon: "lan" },
+                            { field: "password", label: "Clave", icon: "key" }
+                        ]
+
+                        delegate: StyledRect {
+                            property var secretData: modelData
+                            readonly property bool revealed: secretData.field === "host"
+                                ? root.networkHostVisible : root.networkPasswordVisible
+                            readonly property string value: secretData.field === "host"
+                                ? root.networkHostAddress : root.networkPrivatePassword
+                            width: parent.width
+                            height: 42
+                            radius: Theme.cornerRadius
+                            color: secretMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+
+                            DankIcon {
+                                id: secretIcon
+                                anchors.left: parent.left
+                                anchors.leftMargin: Theme.spacingM
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: secretData.icon
+                                size: Theme.iconSizeSmall
+                                color: Theme.surfaceVariantText
+                            }
+
+                            StyledText {
+                                anchors.left: secretIcon.right
+                                anchors.leftMargin: Theme.spacingM
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: secretData.label
+                                color: Theme.surfaceText
+                                font.pixelSize: Theme.fontSizeSmall
+                            }
+
+                            Row {
+                                anchors.right: parent.right
+                                anchors.rightMargin: Theme.spacingM
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: Theme.spacingXS
+                                StyledText {
+                                    text: popout.copiedField === secretData.field
+                                        ? (secretData.field === "host" ? "Copiado" : "Copiada")
+                                        : root.hiddenValue(value, revealed)
+                                    color: (revealed || popout.copiedField === secretData.field)
+                                        ? Theme.primary : Theme.surfaceVariantText
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+                                DankIcon {
+                                    name: popout.copiedField === secretData.field
+                                        ? "check" : (revealed ? "visibility_off" : "visibility")
+                                    size: Theme.iconSizeSmall
+                                    color: popout.copiedField === secretData.field ? Theme.primary : Theme.surfaceVariantText
+                                }
+                            }
+
+                            MouseArea {
+                                id: secretMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: mouse => {
+                                    const requestedField = secretData.field
+                                    const requestedButton = mouse.button
+                                    const generation = root.networkSecretGeneration
+                                    root.fetchNetworkSecret(requestedField, (ok, freshValue) => {
+                                        if (!ok || generation !== root.networkSecretGeneration
+                                                || !root.privateLanActive || !root.privateLanExpanded)
+                                            return
+                                        if (requestedButton === Qt.RightButton) {
+                                            popout.copyValue(freshValue, requestedField)
+                                            return
+                                        }
+                                        if (requestedField === "host") {
+                                            root.networkHostAddress = freshValue
+                                            root.networkHostVisible = !root.networkHostVisible
+                                        } else {
+                                            root.networkPrivatePassword = freshValue
+                                            root.networkPasswordVisible = !root.networkPasswordVisible
+                                            if (!root.networkPasswordVisible)
+                                                root.networkPrivatePassword = ""
+                                        }
+                                    })
+                                }
                             }
                         }
                     }
