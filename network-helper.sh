@@ -341,7 +341,9 @@ ensure_ap_interface() {
         iw phy "$phy" interface add "$ap" type __ap || return 1
         : > "$OWNED_FILE"
     fi
-    command -v nmcli >/dev/null 2>&1 && nmcli device set "$ap" managed no >/dev/null 2>&1 || true
+    if command -v nmcli >/dev/null 2>&1; then
+        nmcli device set "$ap" managed no >/dev/null 2>&1 || true
+    fi
     ip link set "$ap" down >/dev/null 2>&1 || true
     iw dev "$ap" set type __ap || return 1
     ip link set dev "$ap" address "$mac" || return 1

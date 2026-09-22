@@ -16,10 +16,10 @@ require_root() {
 
 normal_user() {
     user=${SUDO_USER:-}
-    [ -n "$user" ] && [ "$user" != root ] || {
+    if [ -z "$user" ] || [ "$user" = root ]; then
         echo "Ejecuta este instalador con sudo desde tu usuario normal." >&2
         exit 1
-    }
+    fi
     case "$user" in *[!A-Za-z0-9._-]*) echo "Usuario no válido: $user" >&2; exit 1 ;; esac
     printf '%s\n' "$user"
 }
