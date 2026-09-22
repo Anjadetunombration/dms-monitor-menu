@@ -188,7 +188,6 @@ cmd_destroy() {
 
 cmd_status() {
     require_root
-    ensure_dirs
     owned=0
     loaded=0
     connector=0
@@ -204,18 +203,24 @@ cmd_status() {
         state=
     fi
     case "$state" in ABSENT|CREATING|ACTIVE|DESTROYING|ERROR) ;; *) state=ABSENT ;; esac
-    if [ "$loaded" -eq 1 ] && [ "$connected" -eq 1 ] && [ "$state" != CREATING ] && [ "$state" != DESTROYING ]; then
-        state=ACTIVE
-    elif [ "$connected" -eq 0 ] && [ "$state" != CREATING ] && [ "$state" != DESTROYING ]; then
-        state=ABSENT
+    transition_active=0
+    case "$state" in CREATING|DESTROYING) [ -d "$LOCK_DIR" ] && transition_active=1 ;; esac
+    if [ "$transition_active" -eq 0 ]; then
+        if [ "$loaded" -eq 1 ] && [ "$connected" -eq 1 ]; then
+            state=ACTIVE
+        elif [ "$connected" -eq 0 ]; then
+            state=ABSENT
+        fi
     fi
 
     printf 'owned=%s\nloaded=%s\nconnector=%s\nconnected=%s\nstate=%s\n' "$owned" "$loaded" "$connector" "$connected" "$state"
 }
 
-case "${1:-}" in
-    create) [ "$#" -eq 1 ] || exit 2; cmd_create ;;
-    destroy) [ "$#" -eq 1 ] || exit 2; cmd_destroy ;;
-    status) [ "$#" -eq 1 ] || exit 2; cmd_status ;;
-    *) echo "usage: $0 {create|destroy|status}" >&2; exit 2 ;;
-esac
+if [ "${MONITOR_MENU_SOURCE_ONLY:-0}" != 1 ]; then
+    case "${1:-}" in
+        create) [ "$#" -eq 1 ] || exit 2; cmd_create ;;
+        destroy) [ "$#" -eq 1 ] || exit 2; cmd_destroy ;;
+        status) [ "$#" -eq 1 ] || exit 2; cmd_status ;;
+        *) echo "usage: $0 {create|destroy|status}" >&2; exit 2 ;;
+    esac
+fi

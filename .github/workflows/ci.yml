@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck qt6-declarative-dev-tools
+
+      - name: Validate required files and manifest
+        run: python3 tests/validate-manifest.py
+
+      - name: Parse shell scripts with Dash
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            dash -n "$script"
+          done < <(find . -type f -name '*.sh' -print0)
+
+      - name: Run ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -type f -name '*.sh' -exec shellcheck --shell=sh {} +
+
+      - name: Run helper tests
+        run: dash tests/test-helpers.sh
+
+      - name: Parse QML
+        shell: bash
+        run: |
+          set -euo pipefail
+          qmlformat_bin=$(command -v qmlformat || true)
+          if [[ -z "$qmlformat_bin" && -x /usr/lib/qt6/bin/qmlformat ]]; then
+            qmlformat_bin=/usr/lib/qt6/bin/qmlformat
+          fi
+          if [[ -z "$qmlformat_bin" ]]; then
+            echo "qmlformat is unavailable" >&2
+            exit 1
+          fi
+          while IFS= read -r -d '' file; do
+            "$qmlformat_bin" "$file" >/dev/null
+          done < <(find . -type f -name '*.qml' -print0)
+
+      - name: Check whitespace and clean checkout
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git diff --check
+          if [[ -n "$BASE_REF" ]]; then
+            git diff --check "origin/$BASE_REF...HEAD"
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^ HEAD
+          fi
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"

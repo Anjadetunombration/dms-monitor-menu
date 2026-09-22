@@ -1,0 +1,11 @@
+present=1
+enabled=1
+sunshine=1
+managed=1
+lifecycle=ACTIVE
+width=1920
+height=1080
+refresh=60000
+mode=1920x1080@60.000
+audio=local
+capture=virtual

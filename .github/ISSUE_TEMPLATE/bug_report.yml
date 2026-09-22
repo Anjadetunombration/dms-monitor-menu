@@ -1,0 +1,128 @@
+name: Reporte de error
+description: Informa una regresión o fallo reproducible de Monitor Menu
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por ayudar a mejorar Monitor Menu.
+
+        **No pegues contraseñas, claves de Sunshine, certificados ni el resultado de `secret password`.** Revisa y elimina cualquier dato privado antes de enviar el reporte.
+
+  - type: input
+    id: version
+    attributes:
+      label: Versión de Monitor Menu
+      description: Release, tag o commit instalado.
+      placeholder: v0.8.1 o SHA del commit
+    validations:
+      required: true
+
+  - type: dropdown
+    id: feature
+    attributes:
+      label: Función afectada
+      options:
+        - Pantalla física / hotplug
+        - Solo principal
+        - Duplicar
+        - Extender
+        - Monitor virtual
+        - Resolución virtual
+        - Audio
+        - Red actual
+        - Automático
+        - Bypass / LAN privada
+        - Instalación o actualización
+        - Desinstalación
+        - Otra
+    validations:
+      required: true
+
+  - type: input
+    id: distro-kernel
+    attributes:
+      label: Distribución y kernel
+      placeholder: Void Linux; uname -r
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versiones de DMS, Niri y Quickshell
+      placeholder: DMS 1.6.1; Niri 26.04; Quickshell 0.3.1
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU y controlador
+      placeholder: AMD/Intel/NVIDIA y controlador utilizado
+    validations:
+      required: true
+
+  - type: input
+    id: wifi
+    attributes:
+      label: Adaptador Wi-Fi y controlador
+      description: Obligatorio para errores de Automático, Bypass o LAN privada; escribe "No aplica" en otros casos.
+      placeholder: Modelo, controlador y banda 2.4/5 GHz
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Pasos para reproducir
+      placeholder: Describe una secuencia mínima y numerada desde un estado conocido.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportamiento esperado
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Comportamiento real
+      description: Incluye el mensaje visible y si la operación quedó aplicada parcialmente.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnóstico
+      description: Ejecuta solo los comandos relevantes y elimina cualquier dato que no quieras publicar. Nunca ejecutes ni pegues `secret password`.
+      render: shell
+      placeholder: |
+        ~/.config/DankMaterialShell/plugins/MonitorMenu/virtual-monitor-helper.sh status
+        sudo -n /usr/local/libexec/monitor-menu-vkms status
+        sudo -n /usr/local/libexec/monitor-menu-network status
+        niri msg outputs
+        dms randr --json
+        pgrep -af sunshine
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Contexto adicional
+      description: Capturas, Sunshine y topología de pantallas. Oculta SSID, IP, MAC y otros datos privados si lo prefieres.
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Confirmaciones
+      options:
+        - label: Busqué reportes existentes del mismo problema.
+          required: true
+        - label: Confirmo que no incluí contraseñas, claves, certificados ni `secret password`.
+          required: true

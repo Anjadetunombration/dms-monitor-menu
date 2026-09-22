@@ -1,8 +1,6 @@
 *.log
 *.tar.gz
 *.zip
-*.png
-*.jpg
-*.jpeg
 .DS_Store
 __pycache__/
+dist/

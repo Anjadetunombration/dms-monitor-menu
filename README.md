@@ -1,122 +1,121 @@
-# Monitor Menu v0.8.0
+# Monitor Menu
 
-Widget para DankMaterialShell (DMS) + Niri que gestiona pantallas físicas, `Virtual-1` mediante VKMS + Sunshine y una red adaptable para el monitor remoto.
+Widget de DankMaterialShell para gestionar pantallas físicas, una salida virtual VKMS para Sunshine y conectividad privada adaptable en Niri.
 
-## Funciones
+![Monitor Menu con monitor virtual y LAN privada activos](docs/screenshot.png)
 
-- Detecta pantallas físicas y hotplug mediante `dms randr --json`.
-- Protege la pantalla principal y permite encender o apagar las secundarias.
-- Incluye `Solo principal`, `Duplicar` con `wl-mirror` y `Extender`.
-- Crea o retira lógicamente `Virtual-1` dentro de la misma sesión Niri y fija Sunshine a esa salida.
-- Ofrece resoluciones virtuales compatibles y audio `Local` o `Virtual`.
-- Conserva el padding configurable de la píldora de DankBar.
-- Añade `Modo de red`: `Automático`, `Red actual` y `Bypass`.
-- Muestra `LAN privada` únicamente cuando el AP está realmente activo.
+## Features
 
-## Modos De Red
+- Detecta las salidas físicas de DMS/Niri y protege una salida principal elegida mediante una heurística.
+- Ofrece `Solo principal`, `Duplicar` con wl-mirror y `Extender`.
+- Gestiona `Virtual-1` mediante VKMS, Sunshine, resoluciones compatibles y audio Local/Virtual.
+- Incluye los modos de red `Automático`, `Red actual` y `Bypass`.
+- Crea una LAN privada aislada mediante hostapd, dnsmasq y nftables opcional.
+- Mantiene los helpers privilegiados como copias root-owned con reglas sudoers de argumentos cerrados.
+- Reduce actividad en reposo: el estado transitorio se consulta al abrir el menú y mientras permanece visible.
 
-### Automático
+## Quick Start
 
-Es el modo predeterminado. Intenta crear una LAN privada directa y, si el hardware o las herramientas no lo permiten, utiliza la red actual. La implementación técnica queda oculta para el usuario.
+Descarga y descomprime una release, entra en su carpeta y ejecuta como usuario normal:
 
-### Red actual
+```bash
+./install.sh
+dms restart
+```
 
-Sunshine y el receptor usan directamente la red a la que ya está conectado el equipo. No se crea una interfaz AP ni aparece la sección `LAN privada`.
+El instalador copia únicamente los archivos de ejecución a:
 
-### Bypass
+```text
+~/.config/DankMaterialShell/plugins/MonitorMenu
+```
 
-Crea una LAN privada directa entre el equipo y el receptor. Si NetworkManager tiene una Wi-Fi asociada, el AP usa el mismo canal. Sin uplink, elige un canal permitido, prefiriendo 5 GHz no DFS. La LAN y Sunshine siguen funcionando sin Internet.
+Solicita `sudo` solo para instalar los helpers root-owned y sus reglas sudoers. No descarga código ni utiliza `curl | sudo sh`.
 
-Cuando NetworkManager inicia una asociación, el watcher puede pausar brevemente el AP para liberar la radio. Tras una asociación estable reconstruye la LAN en el canal nuevo; si falla, vuelve a modo autónomo después de un debounce.
+Instalación manual:
 
-SSID, contraseña y MAC local administrada persisten en `/var/lib/monitor-menu-network`. La interfaz AP permanece fuera de la gestión de NetworkManager. Si existe conectividad real y `nft` está disponible, el helper comparte Internet únicamente entre la interfaz privada y la ruta de salida detectada.
+```bash
+mkdir -p ~/.config/DankMaterialShell/plugins/MonitorMenu/components
+install -m 0644 plugin.json MonitorMenu.qml MonitorMenuSettings.qml \
+  ~/.config/DankMaterialShell/plugins/MonitorMenu/
+install -m 0644 components/*.qml \
+  ~/.config/DankMaterialShell/plugins/MonitorMenu/components/
+install -m 0755 ./*.sh ~/.config/DankMaterialShell/plugins/MonitorMenu/
+sudo sh ~/.config/DankMaterialShell/plugins/MonitorMenu/setup-vkms.sh install
+sudo sh ~/.config/DankMaterialShell/plugins/MonitorMenu/setup-network.sh install
+dms restart
+```
 
-## Estado Dinámico
+## Requirements
 
-La UI obtiene del sistema efectivo:
+- Niri 26.04, que es la versión base probada.
+- DankMaterialShell 1.6 o posterior.
+- Quickshell 0.3 o posterior.
+- Kernel con el módulo `vkms`.
+- Sunshine.
+- NetworkManager/nmcli, hostapd, dnsmasq, iw, iproute2, sudo y visudo.
+- wl-mirror para `Duplicar`.
+- nftables para compartir Internet; la LAN local funciona sin él.
+- jq recomendado para informar con precisión el modo virtual activo.
 
-- interfaz AP y uplink;
-- SSID, dirección del host, banda y canal;
-- clientes asociados;
-- estado de la máquina (`UPLINK`, `CONNECTING`, `STANDALONE` o `RECONFIGURING`);
-- disponibilidad de Internet compartido.
-
-`Host` y `Clave` están ocultos por defecto. Un clic izquierdo consulta el valor actual y lo muestra u oculta. Un clic derecho vuelve a consultarlo y lo copia mediante `TextInput.copy()` de Qt, sin depender de `wl-copy`. La clave no forma parte del polling normal ni se guarda en DMS.
-
-## Requisitos
-
-- Niri 26.04 o compatible
-- DankMaterialShell 1.6 o posterior
-- Quickshell 0.3 o posterior
-- kernel con `vkms`
-- Sunshine
-- NetworkManager / `nmcli`
-- `hostapd`
-- `dnsmasq`
-- `iw`
-- `iproute2`
-- `sudo` y `visudo`
-- `nftables` para compartir Internet; la LAN local funciona sin `nft`
-- `wl-mirror` para `Duplicar`
-- `jq` recomendado para reportar con precisión el modo virtual activo
-
-En Void Linux, las dependencias de red se instalan con:
+En Void Linux, las dependencias principales de red se instalan con:
 
 ```bash
 sudo xbps-install -S NetworkManager hostapd dnsmasq iw iproute2 nftables sudo
 ```
 
-No se necesita AUR ni se añade una dependencia para el portapapeles.
+## Network Modes
 
-## Instalación
+| Modo | Comportamiento |
+| --- | --- |
+| `Automático` | Intenta crear la LAN privada al iniciar. Si el intento inicial falla, usa la red actual. |
+| `Red actual` | Sunshine utiliza directamente la red existente; no crea interfaz AP. |
+| `Bypass` | Crea una LAN privada directa para el receptor y sigue el canal del uplink cuando el hardware lo exige. |
 
-Instale o actualice el plugin:
+SSID, contraseña y MAC local persisten bajo `/var/lib/monitor-menu-network` con permisos root-only. Cuando existe conectividad y nftables está disponible, el helper comparte Internet únicamente entre la interfaz privada y la ruta detectada.
 
-```bash
-mkdir -p ~/.config/DankMaterialShell/plugins/MonitorMenu
-cp -a MonitorMenu/. ~/.config/DankMaterialShell/plugins/MonitorMenu/
-chmod +x ~/.config/DankMaterialShell/plugins/MonitorMenu/*.sh
+Durante asociaciones de NetworkManager, el watcher puede pausar brevemente el AP. Tras estabilizarse la nueva asociación reconstruye la LAN en el canal adecuado; sin uplink intenta un canal autónomo permitido.
+
+## Dynamic State
+
+La interfaz obtiene del sistema efectivo:
+
+- interfaz AP y uplink;
+- SSID, dirección del host, banda y canal;
+- clientes asociados;
+- estado `UPLINK`, `CONNECTING`, `STANDALONE` o `RECONFIGURING`;
+- disponibilidad de Internet compartido.
+
+`Host` y `Clave` están ocultos por defecto. Se consultan solo al interactuar y se copian con `TextInput.copy()` de Qt. La contraseña no forma parte del polling, no se guarda en PluginSettings y no se registra en logs.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    UI["DMS / MonitorMenu.qml"] --> DMS["DMS display API"]
+    UI --> Niri["Niri compositor"]
+    Niri --> Physical["Physical outputs"]
+    Niri --> Virtual["Virtual-1 / VKMS"]
+    Virtual --> Sunshine["Sunshine"]
+    UI --> Network["Root-owned network helper"]
+    Network --> NM["NetworkManager"]
+    Network --> AP["hostapd + dnsmasq"]
+    Network --> NFT["nftables, optional"]
 ```
 
-Instale el helper VKMS privilegiado una vez:
+`MonitorMenu.qml` conserva el estado y la orquestación. `components/` contiene la presentación. Los scripts de setup instalan los helpers privilegiados en `/usr/local/libexec`; QML nunca ejecuta como root una copia modificable dentro del plugin.
 
-```bash
-sudo sh ~/.config/DankMaterialShell/plugins/MonitorMenu/setup-vkms.sh install
-```
+## Sunshine And Audio
 
-El instalador migra la configuración anterior de `/etc/modules-load.d`, copia el helper a `/usr/local/libexec/monitor-menu-vkms` como `root:root` y autoriza únicamente `create`, `destroy` y `status`. Al apagar el monitor, Sunshine se detiene primero y el connector se fuerza a `disconnected`; así `Virtual-1` desaparece de Niri/DMS aunque el módulo permanezca cargado mientras Niri conserve abierto el dispositivo DRM. Al encenderlo, el helper vuelve a detectar el connector y espera el hotplug antes de iniciar Sunshine.
+El helper configura `output_name = Virtual-1`.
 
-Instale el helper de red privilegiado:
-
-```bash
-sudo sh ~/.config/DankMaterialShell/plugins/MonitorMenu/setup-network.sh install
-```
-
-El instalador copia el helper a `/usr/local/libexec/monitor-menu-network` como `root:root` y crea reglas sudoers limitadas a argumentos concretos. DMS nunca recibe permiso para ejecutar como root un script modificable dentro del plugin.
-
-Reinicie DMS o vuelva a escanear sus plugins.
-
-Para actualizar una instalación existente, reemplace los archivos del plugin y vuelva a ejecutar:
-
-```bash
-sudo sh ~/.config/DankMaterialShell/plugins/MonitorMenu/setup-network.sh install
-sudo sh ~/.config/DankMaterialShell/plugins/MonitorMenu/setup-vkms.sh install
-```
-
-La actualización conserva modo, SSID, clave y MAC persistentes.
-
-## Sunshine Y Audio
-
-El helper mantiene `output_name = Virtual-1`.
-
-`Audio > Local` configura:
+Audio `Local`:
 
 ```ini
 output_name = Virtual-1
 stream_audio = disabled
 ```
 
-`Audio > Virtual` configura:
+Audio `Virtual`:
 
 ```ini
 output_name = Virtual-1
@@ -124,7 +123,9 @@ stream_audio = enabled
 virtual_sink = sink-sunshine-stereo
 ```
 
-## Diagnóstico
+La selección se guarda bajo el estado de usuario de Monitor Menu. Si `Virtual-1` está activo, cambiar el audio reinicia Sunshine de forma controlada.
+
+## Diagnostics
 
 Estado del monitor virtual:
 
@@ -132,82 +133,118 @@ Estado del monitor virtual:
 ~/.config/DankMaterialShell/plugins/MonitorMenu/virtual-monitor-helper.sh status
 ```
 
-Estado root-owned de VKMS:
+Estado VKMS root-owned:
 
 ```bash
 sudo -n /usr/local/libexec/monitor-menu-vkms status
 ```
 
-Estado parseable de red, sin contraseña:
+Estado de red, sin contraseña:
 
 ```bash
 sudo -n /usr/local/libexec/monitor-menu-network status
 ```
 
-Consultar los valores efectivos manualmente:
+Salidas visibles:
 
 ```bash
-sudo -n /usr/local/libexec/monitor-menu-network secret host
-sudo -n /usr/local/libexec/monitor-menu-network secret password
+niri msg outputs
+dms randr --json
 ```
 
-Últimos eventos del watcher:
+El log de red requiere autorización sudo normal porque no está incluido en las reglas NOPASSWD:
 
 ```bash
 sudo /usr/local/libexec/monitor-menu-network log 100
 ```
 
-Si Moonlight acepta el PIN pero muestra `Certificate verification failed`, revise el log de Sunshine. Las versiones nocturnas anteriores a `2026.918.174827` pueden rechazar identidades duplicadas con `Client certificate identity is not enabled`; actualice Sunshine y elimine únicamente los registros duplicados, sin regenerar `cakey.pem` ni `cacert.pem`.
+Nunca publiques ni adjuntes la salida de `secret password`.
 
-## Pruebas Manuales
+Si Moonlight acepta el PIN pero muestra `Certificate verification failed`, revisa primero el log de Sunshine y actualiza las versiones nocturnas antiguas. El error `Client certificate identity is not enabled` puede indicar identidades duplicadas; elimina únicamente los registros duplicados y no regeneres `cakey.pem` ni `cacert.pem` sin una copia de seguridad.
 
-Active `Monitor virtual` y deje `Modo de red > Automático` o seleccione `Bypass`. Durante cada transición observe:
+## Manual Tests
 
-```bash
-while sleep 1; do sudo -n /usr/local/libexec/monitor-menu-network status; done
-sudo /usr/local/libexec/monitor-menu-network log 100
-iw dev
-ip -4 addr
-```
+No ejecutes cambios de canal durante una sesión remota que no puedas recuperar localmente.
 
-Compruebe, en orden:
+1. Comprueba una pantalla física y el hotplug con el menú abierto y cerrado.
+2. Prueba `Solo principal`, `Extender` y `Duplicar`.
+3. Enciende `Virtual-1` y confirma `capture=virtual` en el estado.
+4. Cambia entre 900p y 1080p y confirma el modo en DMS/Niri.
+5. Cambia Audio entre Local y Virtual.
+6. Prueba `Red actual`: `lan_active=0` y `mm-ap0` no debe existir.
+7. Prueba `Automático` y `Bypass` con uplinks de 5 GHz y 2.4 GHz.
+8. Desconecta el uplink y comprueba la recuperación standalone tras el debounce.
+9. Apaga el monitor virtual y confirma la limpieza de Sunshine, AP, procesos y reglas propias.
+10. Reinicia DMS con el monitor virtual ON y OFF.
 
-1. Wi-Fi 5 GHz: AP y uplink muestran el mismo canal; conecte el receptor.
-2. Cambie a una Wi-Fi 2.4 GHz: el estado pasa por adaptación y reaparece con el mismo SSID y clave.
-3. Desconecte el uplink: tras el debounce aparece `STANDALONE`, preferentemente en 5 GHz.
-4. Desde standalone, conecte una Wi-Fi nueva: el AP se pausa si hace falta y reaparece en el canal asociado.
-5. Con conectividad `full`, `internet=shared`; sin Internet, Sunshine sigue accesible por el host privado.
-6. Seleccione `Red actual`: `lan_active=0` y `mm-ap0` no debe existir.
-7. Seleccione `Bypass`: despliegue `LAN privada` y pruebe revelar/copiar `Host` y `Clave`.
-8. Apague `Monitor virtual`: desaparecen AP, procesos y reglas propias sin cambiar la Wi-Fi principal.
-9. Confirme además que `Virtual-1` ya no aparece en `niri msg outputs` ni en `dms randr --json`, aunque `/sys/module/vkms` pueda seguir presente.
-10. Enciéndalo de nuevo y confirme que modo, SSID, clave, resolución y audio se restauran.
-11. Reinicie DMS y verifique `capture=virtual` en el estado del monitor.
+La lista completa previa a una publicación está en [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md).
 
-No ejecute las pruebas de cambio de canal durante una sesión remota que no pueda recuperar localmente.
+## Security
 
-## Desinstalación
+- Los helpers autorizados son root-owned y aceptan operaciones y argumentos cerrados.
+- El estado persistente y la contraseña usan permisos root-only.
+- La configuración temporal de hostapd que contiene la clave usa modo `0600`.
+- El estado periódico y los logs no contienen la contraseña.
+- Las reglas nftables viven en una tabla propia y solo se eliminan si existe el marcador de ownership del plugin.
+- `ap_isolate=1` evita comunicación directa entre clientes del AP.
+- Un cliente que conoce la clave puede acceder a servicios expuestos por el equipo en la interfaz privada, incluido Sunshine.
+- El portapapeles del escritorio puede conservar temporalmente un valor copiado después de ocultarlo.
 
-Elimine primero la infraestructura y autorización de red:
+## Uninstallation
+
+Apaga primero el monitor virtual. Después ejecuta desde la carpeta instalada:
 
 ```bash
 sudo sh ~/.config/DankMaterialShell/plugins/MonitorMenu/setup-network.sh remove
 sudo sh ~/.config/DankMaterialShell/plugins/MonitorMenu/setup-vkms.sh remove
+rm -rf ~/.config/DankMaterialShell/plugins/MonitorMenu
+dms restart
 ```
 
-El instalador verifica primero la limpieza de procesos, interfaz, forwarding y reglas propias. Solo después borra el helper y sudoers; si la limpieza falla conserva el helper y devuelve un error para permitir el diagnóstico. Los secretos persistentes permanecen en `/var/lib/monitor-menu-network` para una futura reinstalación; puede eliminarlos manualmente si ya no los necesita.
+El desinstalador de red conserva el helper si la limpieza falla. La identidad persistente de red permanece en `/var/lib/monitor-menu-network` para una reinstalación futura y puede eliminarse manualmente si ya no se necesita.
 
-## Seguridad
+## Optional Variables
 
-- El helper autorizado es root-owned y acepta un conjunto cerrado de operaciones y modos.
-- El helper VKMS solo puede conectar, desconectar y consultar la salida que pertenece a Monitor Menu; no descarga módulos a la fuerza ni termina el compositor.
-- La configuración, contraseña y MAC persistentes usan permisos root-only.
-- El estado periódico no contiene la contraseña.
-- Las reglas nftables tienen tabla propia y limitan forwarding a la LAN privada y a la ruta detectada.
-- `ap_isolate=1` impide comunicación directa entre clientes del AP.
-- Un cliente que conozca la clave puede acceder a servicios que el equipo exponga en la interfaz privada, incluido Sunshine; trate esa clave como un secreto.
-- El portapapeles del escritorio puede conservar temporalmente un valor copiado incluso después de ocultarlo en el widget.
+`MONITOR_MENU_SUNSHINE_STRATUM` selecciona el estrato de Bedrock usado para Sunshine; el valor predeterminado es `arch`. El nombre del output virtual no es configurable desde la interfaz y se mantiene como `Virtual-1`.
 
-## Variables Opcionales
+## Known Limitations
 
-El monitor virtual conserva `MONITOR_MENU_VIRTUAL_OUTPUT` y `MONITOR_MENU_SUNSHINE_STRATUM`; sus valores predeterminados son `Virtual-1` y `arch`. La UI de red no presupone nombres ni direcciones: siempre muestra el estado efectivo del helper.
+- Monitor Menu está diseñado para DankMaterialShell sobre Niri; no gestiona otros compositores.
+- La salida protegida como principal se elige por heurística: primero un `eDP-*` activo, luego cualquier `eDP-*` y finalmente la primera salida física activa.
+- El plugin espera controlar en exclusiva un conector VKMS. No está diseñado para coexistir con otro gestor de VKMS ni para administrar varias salidas virtuales.
+- Al apagar el monitor virtual se desconecta el conector para retirarlo de Niri/DMS, pero el módulo `vkms` puede permanecer cargado porque Niri conserva abierto el dispositivo DRM.
+- La disponibilidad de VKMS y sus modos depende del kernel. Solo se ofrecen presets de 60 Hz que VKMS/Niri anuncian realmente.
+- Sunshine depende de que `Virtual-1` esté anunciado y listo. Monitor Menu controla la instancia Sunshine del usuario y modifica `~/.config/sunshine/sunshine.conf`; los valores anteriores no se restauran automáticamente.
+- `Duplicar` utiliza ventanas fullscreen de wl-mirror, no clonación nativa del compositor.
+- La LAN privada requiere un adaptador y controlador capaces de mantener interfaces managed y AP de forma concurrente.
+- En muchos adaptadores, managed y AP deben compartir canal. Los cambios de asociación o canal pueden causar cortes breves.
+- Se admiten uplinks de 2.4 y 5 GHz para adaptar el AP; los uplinks Wi-Fi de 6 GHz no están soportados actualmente.
+- `Automático` hace fallback a la red actual si falla la creación inicial del AP; un fallo posterior del watcher puede provocar pausa y reintentos en lugar de cambiar inmediatamente a `Red actual`.
+- La red privada está vinculada al lifecycle de `Virtual-1` y no se ofrece como función independiente.
+- La interfaz y subred privadas predeterminadas son `mm-ap0` y `10.77.0.0/24`; no son configurables desde la UI.
+
+## Development
+
+Validación local:
+
+```bash
+find . -type f -name '*.sh' -exec dash -n {} \;
+find . -type f -name '*.sh' -exec shellcheck --shell=sh {} +
+python3 tests/validate-manifest.py
+dash tests/test-helpers.sh
+git diff --check
+```
+
+CI usa `qmlformat` como parser ligero. `qmllint` completo requiere los módulos QML de DMS y no se ejecuta para evitar falsos positivos por imports ausentes.
+
+## Repository Metadata
+
+Descripción sugerida:
+
+> DMS/Niri widget for physical displays, VKMS virtual monitors, Sunshine and adaptive private networking.
+
+Topics sugeridos: `dankmaterialshell`, `dms`, `niri`, `wayland`, `qml`, `quickshell`, `linux`, `vkms`, `sunshine`, `monitor-management`, `virtual-display`.
+
+## License
+
+MIT. Consulta [`LICENSE`](LICENSE).

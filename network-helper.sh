@@ -30,6 +30,7 @@ OWNED_FILE=$RUN_DIR/interface-owned
 FORWARD_FILE=$RUN_DIR/forwarding.previous
 ROUTE_FILE=$RUN_DIR/forwarding.route
 NFT_TABLE=monitor_menu_network
+NFT_OWNED_FILE=$RUN_DIR/nft-owned
 
 err() { printf 'monitor-menu-network: %s\n' "$*" >&2; }
 
@@ -174,8 +175,14 @@ pid_matches() {
     pid=$(sed -n '1p' "$pidfile" 2>/dev/null || true)
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
     kill -0 "$pid" 2>/dev/null || return 1
-    [ -r "/proc/$pid/cmdline" ] || return 0
-    tr '\000' ' ' < "/proc/$pid/cmdline" | grep -Fq -- "$marker"
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    command_line=$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || return 1
+    case "$marker" in
+        hostapd) printf '%s\n' "$command_line" | grep -Fq -- "$HOSTAPD_CONF" ;;
+        dnsmasq) printf '%s\n' "$command_line" | grep -Fq -- "--pid-file=$DNSMASQ_PID" ;;
+        _watch) printf '%s\n' "$command_line" | grep -Fq -- "monitor-menu-network _watch" ;;
+        *) return 1 ;;
+    esac
 }
 
 stop_pid() {
@@ -198,7 +205,7 @@ stop_pid() {
     rm -f "$pidfile"
 }
 
-write_state() {
+write_state() (
     effective=$1
     phase=$2
     uplink=$3
@@ -220,7 +227,7 @@ write_state() {
     } > "$tmp" || return 1
     chmod 0644 "$tmp" || return 1
     mv "$tmp" "$STATE_FILE" || return 1
-}
+)
 
 state_get() {
     key=$1
@@ -441,8 +448,12 @@ setup_forwarding() {
     [ -n "$nft" ] || { teardown_forwarding || return 1; log_event "routing disabled: nft not found"; return 0; }
     remember_forwarding "$ap"
     remember_forwarding "$route_if"
-    "$nft" delete table inet "$NFT_TABLE" >/dev/null 2>&1 || true
+    if "$nft" list table inet "$NFT_TABLE" >/dev/null 2>&1; then
+        [ -f "$NFT_OWNED_FILE" ] || { err "la tabla nftables $NFT_TABLE no pertenece a Monitor Menu"; return 1; }
+        "$nft" delete table inet "$NFT_TABLE" || return 1
+    fi
     "$nft" add table inet "$NFT_TABLE" || return 1
+    : > "$NFT_OWNED_FILE"
     "$nft" "add chain inet $NFT_TABLE forward { type filter hook forward priority -10; policy accept; }" || return 1
     "$nft" add rule inet "$NFT_TABLE" forward iifname "$ap" oifname "$ap" drop || return 1
     "$nft" add rule inet "$NFT_TABLE" forward iifname "$ap" oifname "$route_if" accept || return 1
@@ -459,7 +470,7 @@ teardown_forwarding() {
     rc=0
     nft=$(nft_bin 2>/dev/null || true)
     if [ -n "$nft" ]; then
-        if "$nft" list table inet "$NFT_TABLE" >/dev/null 2>&1; then
+        if [ -f "$NFT_OWNED_FILE" ] && "$nft" list table inet "$NFT_TABLE" >/dev/null 2>&1; then
             "$nft" delete table inet "$NFT_TABLE" >/dev/null 2>&1 || rc=1
         fi
     elif [ -s "$ROUTE_FILE" ]; then
@@ -476,7 +487,7 @@ teardown_forwarding() {
         done < "$FORWARD_FILE"
     fi
     if [ "$rc" -eq 0 ]; then
-        rm -f "$FORWARD_FILE" "$ROUTE_FILE"
+        rm -f "$FORWARD_FILE" "$ROUTE_FILE" "$NFT_OWNED_FILE"
     fi
     return "$rc"
 }
@@ -504,7 +515,11 @@ cleanup_private() {
 
 apply_plan() {
     plan=$1
-    oldifs=$IFS; IFS='|'; set -- $plan; IFS=$oldifs
+    oldifs=$IFS
+    IFS='|'
+    # shellcheck disable=SC2086
+    set -- $plan
+    IFS=$oldifs
     uplink=$1; phy=$2; channel=$3; freq=$4; band=$5; hw=$6; source=$7
     : "$freq"
     ap=$(ap_iface)
@@ -593,7 +608,11 @@ watch_loop() {
             no_uplink_since=0
             connecting_since=0
             association_timed_out=0
-            oldifs=$IFS; IFS='|'; set -- $info; IFS=$oldifs
+            oldifs=$IFS
+            IFS='|'
+            # shellcheck disable=SC2086
+            set -- $info
+            IFS=$oldifs
             iface=$1; phy=$2; channel=$3; freq=$4; band=$5; hw=$6
             : "$freq"
             if [ "$stable_channel" = "$channel" ]; then stable_count=$((stable_count + 1)); else stable_channel=$channel; stable_count=1; fi
@@ -728,7 +747,8 @@ internet_state() {
         ap_forward=$(sed -n '1p' "/proc/sys/net/ipv4/conf/$ap/forwarding" 2>/dev/null || true)
         route_forward=$(sed -n '1p' "/proc/sys/net/ipv4/conf/$route_if/forwarding" 2>/dev/null || true)
         [ "$configured_route" = "$route_if" ] && [ "$ap_forward" = 1 ] && [ "$route_forward" = 1 ] \
-            && [ -n "$nft" ] && "$nft" list table inet "$NFT_TABLE" >/dev/null 2>&1 \
+            && [ -f "$NFT_OWNED_FILE" ] && [ -n "$nft" ] \
+            && "$nft" list table inet "$NFT_TABLE" >/dev/null 2>&1 \
             && printf 'shared\n' || printf 'unavailable\n'
     else
         printf 'current\n'
@@ -815,7 +835,14 @@ cmd_status() {
         pid_matches "$HOSTAPD_PID" hostapd && pid_matches "$DNSMASQ_PID" dnsmasq \
             && [ -n "$(lan_address 2>/dev/null || true)" ] && [ -n "$radio" ] && active=1
         channel=; band=
-        if [ -n "$radio" ]; then oldifs=$IFS; IFS='|'; set -- $radio; IFS=$oldifs; channel=$1; band=$2; fi
+        if [ -n "$radio" ]; then
+            oldifs=$IFS
+            IFS='|'
+            # shellcheck disable=SC2086
+            set -- $radio
+            IFS=$oldifs
+            channel=$1; band=$2
+        fi
         printf 'lan_active=%s\ninterface=%s\nssid=%s\nip=%s\n' "$active" "$ap" "$(live_ap_ssid)" "$(lan_address 2>/dev/null || true)"
         printf 'uplink=%s\nband=%s\nchannel=%s\nsource=%s\nclients=%s\nwatch=%s\n' \
             "$(state_get UPLINK 2>/dev/null || true)" "$band" "$channel" "$(state_get SOURCE 2>/dev/null || true)" \
@@ -856,13 +883,15 @@ usage() {
     printf '%s\n' "usage: $0 {configure MODE|start MODE|stop|status|secret host|password|log [N]}"
 }
 
-case "${1:-}" in
-    configure) [ "$#" -eq 2 ] || exit 2; cmd_configure "$2" ;;
-    start) [ "$#" -eq 2 ] || exit 2; cmd_start "$2" ;;
-    stop) [ "$#" -eq 1 ] || exit 2; cmd_stop ;;
-    status) [ "$#" -eq 1 ] || exit 2; cmd_status ;;
-    secret) [ "$#" -eq 2 ] || exit 2; cmd_secret "$2" ;;
-    log) [ "$#" -le 2 ] || exit 2; cmd_log "${2:-80}" ;;
-    _watch) watch_loop ;;
-    *) usage >&2; exit 2 ;;
-esac
+if [ "${MONITOR_MENU_SOURCE_ONLY:-0}" != 1 ]; then
+    case "${1:-}" in
+        configure) [ "$#" -eq 2 ] || exit 2; cmd_configure "$2" ;;
+        start) [ "$#" -eq 2 ] || exit 2; cmd_start "$2" ;;
+        stop) [ "$#" -eq 1 ] || exit 2; cmd_stop ;;
+        status) [ "$#" -eq 1 ] || exit 2; cmd_status ;;
+        secret) [ "$#" -eq 2 ] || exit 2; cmd_secret "$2" ;;
+        log) [ "$#" -le 2 ] || exit 2; cmd_log "${2:-80}" ;;
+        _watch) watch_loop ;;
+        *) usage >&2; exit 2 ;;
+    esac
+fi

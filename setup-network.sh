@@ -24,7 +24,7 @@ normal_user() {
 install_helper() {
     require_root install
     user=$(normal_user)
-    script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+    script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
     src=$script_dir/network-helper.sh
     [ -f "$src" ] || { echo "No se encontró network-helper.sh" >&2; exit 1; }
 
@@ -61,7 +61,7 @@ install_helper() {
         "$DEST" stop >/dev/null 2>&1 || { echo "No se pudo detener el helper anterior" >&2; exit 1; }
     fi
     mv "$staged" "$DEST"
-    rm -f "$SUDOERS_DIR"/monitor-menu-network-*
+    rm -f "$sudoers"
     install -m 0440 -o root -g root "$tmp" "$sudoers"
     rm -f "$tmp"
     trap - EXIT HUP INT TERM
@@ -70,10 +70,12 @@ install_helper() {
 
 remove_helper() {
     require_root remove
+    user=$(normal_user)
+    sudoers=$SUDOERS_DIR/monitor-menu-network-$user
     if [ -x "$DEST" ]; then
         "$DEST" stop >/dev/null 2>&1 || { echo "No se pudo limpiar la red; se conserva el helper" >&2; exit 1; }
     fi
-    rm -f "$SUDOERS_DIR"/monitor-menu-network-*
+    rm -f "$sudoers"
     rm -f "$DEST"
     printf 'installed=0\n'
 }

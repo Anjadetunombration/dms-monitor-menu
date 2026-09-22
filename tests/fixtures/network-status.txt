@@ -1,0 +1,8 @@
+enabled=1
+mode=auto
+effective_mode=bypass
+state=UPLINK
+lan_active=1
+clients=0
+watch=1
+internet=shared

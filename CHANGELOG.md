@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.8.1
+
+### Fixed
+
+- Corregido el estado de red que permanecía en `RECONFIGURING` por una colisión de variables POSIX tras iniciar correctamente la LAN privada.
+- Bloqueadas las acciones de lifecycle virtual durante transiciones VKMS y mutaciones de red concurrentes.
+- Evitado que un refresco de red pendiente se pierda detrás de otra consulta activa.
+- El estado VKMS reconcilia transiciones interrumpidas cuando ya no existe una operación activa.
+- La restauración automática conserva la preferencia ON después de un fallo transitorio de VKMS, Niri o Sunshine.
+- Los PID files de Sunshine, wl-mirror, hostapd y dnsmasq ya no se aceptan sin validar el proceso gestionado.
+- La tabla nftables solo se elimina cuando existe su marcador de ownership.
+
+### Changed
+
+- Separada la presentación QML en componentes de pantallas, modos, monitor virtual, red y LAN privada sin cambiar el UX.
+- Las consultas `status` dejan de crear estado persistente o reescribir PID files.
+- Añadido instalador explícito para releases descomprimidas y reorganizada la documentación pública.
+- Actualizado el autor público del manifiesto sin incluir datos personales.
+
+### Development
+
+- Añadido CI con Dash, ShellCheck, validación del manifiesto, parser QML, tests y comprobación de árbol limpio.
+- Añadidos fixtures y tests de helpers para estados `key=value`, campos obligatorios, modos y consultas sin efectos laterales.
+- Añadidos formulario de bugs y checklist de release.
+
 ## 0.8.0
 
 - Reducido el consumo en reposo: pantallas, duplicación, monitor virtual y red solo se consultan mientras el menú está visible, con refresco inmediato al abrirlo.

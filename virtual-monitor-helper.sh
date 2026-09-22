@@ -3,7 +3,7 @@ set -eu
 
 virtual_output="${MONITOR_MENU_VIRTUAL_OUTPUT:-Virtual-1}"
 arch_stratum="${MONITOR_MENU_SUNSHINE_STRATUM:-arch}"
-runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
+runtime_dir="${XDG_RUNTIME_DIR:-/tmp/monitor-menu-$(id -u)}"
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/monitor-menu"
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sunshine"
@@ -18,7 +18,10 @@ vkms_helper="${MONITOR_MENU_VKMS_HELPER:-/usr/local/libexec/monitor-menu-vkms}"
 default_mode="1920x1080@60.000"
 default_audio_mode="local"
 
-mkdir -p "$state_dir" "$cache_dir" "$config_dir"
+ensure_dirs() {
+    mkdir -p "$runtime_dir" "$state_dir" "$cache_dir" "$config_dir"
+    chmod 0700 "$runtime_dir"
+}
 
 acquire_operation_lock() {
     tries=0
@@ -50,6 +53,7 @@ release_operation_lock() {
 }
 
 lock_operation() {
+    ensure_dirs
     acquire_operation_lock
     trap 'release_operation_lock' EXIT
     trap 'release_operation_lock; exit 129' HUP
@@ -249,7 +253,10 @@ wait_virtual_ready() {
 sunshine_running() {
     if [ -f "$sunshine_pidfile" ]; then
         pid="$(cat "$sunshine_pidfile" 2>/dev/null || true)"
-        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+        case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$pid" -gt 1 ] || return 1
+        [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = sunshine ] \
+            && kill -0 "$pid" 2>/dev/null && return 0
     fi
     return 1
 }
@@ -268,7 +275,14 @@ stop_sunshine() {
     pids=""
     if [ -f "$sunshine_pidfile" ]; then
         pid="$(cat "$sunshine_pidfile" 2>/dev/null || true)"
-        [ -n "$pid" ] && pids="$pid"
+        case "$pid" in
+            ''|*[!0-9]*) ;;
+            *)
+                if [ "$pid" -gt 1 ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = sunshine ]; then
+                    pids="$pid"
+                fi
+                ;;
+        esac
     fi
     extra="$(pgrep -u "$(id -u)" -x sunshine 2>/dev/null || true)"
     [ -n "$extra" ] && pids="$pids $extra"
@@ -473,15 +487,17 @@ disable_virtual() {
 
 rollback_virtual_start() {
     rc="$1"
+    failure_state="${2:-off}"
     stop_sunshine
     disable_virtual || true
     destroy_virtual_device || true
-    printf '%s\n' off > "$state_file"
+    printf '%s\n' "$failure_state" > "$state_file"
     return "$rc"
 }
 
 start_virtual() {
     primary="${1:-eDP-1}"
+    failure_state="${2:-off}"
     mode="$(desired_mode)"
 
     # Publish intent before enabling the output. DMS may recreate plugin
@@ -490,29 +506,29 @@ start_virtual() {
 
     create_virtual_device || {
         rc=$?
-        printf '%s\n' off > "$state_file"
+        printf '%s\n' "$failure_state" > "$state_file"
         return "$rc"
     }
 
     niri msg output "$virtual_output" on >/dev/null 2>&1 || {
-        rollback_virtual_start 22
+        rollback_virtual_start 22 "$failure_state"
         return $?
     }
     apply_mode "$mode" || {
         rc=$?
-        rollback_virtual_start "$rc"
+        rollback_virtual_start "$rc" "$failure_state"
         return $?
     }
     position_virtual_right_of "$primary"
 
     wait_virtual_ready || {
-        rollback_virtual_start 25
+        rollback_virtual_start 25 "$failure_state"
         return $?
     }
 
     start_sunshine || {
         rc=$?
-        rollback_virtual_start "$rc"
+        rollback_virtual_start "$rc" "$failure_state"
         return $?
     }
 
@@ -615,7 +631,7 @@ init_virtual() {
                 && [ "$(selected_capture)" = virtual ]; then
                 return 0
             fi
-            start_virtual "$primary" || true
+            start_virtual "$primary" on || true
             ;;
         *)
             if vkms_managed; then
@@ -647,7 +663,7 @@ print_status() {
     lifecycle=ERROR
 
     mode="$(desired_mode)"
-    # shellcheck disable=SC2086
+    # shellcheck disable=SC2046
     set -- $(parse_mode "$mode")
     width="$1"
     height="$2"
@@ -692,40 +708,42 @@ print_status() {
     printf 'capture=%s\n' "$(selected_capture)"
 }
 
-case "${1:-}" in
-    start)
-        lock_operation
-        start_virtual "${2:-eDP-1}"
-        ;;
-    stop)
-        lock_operation
-        stop_virtual
-        ;;
-    init)
-        lock_operation
-        init_virtual "${2:-eDP-1}"
-        ;;
-    set-mode)
-        [ "$#" -ge 2 ] || { echo "missing mode" >&2; exit 2; }
-        lock_operation
-        set_virtual_mode "$2" "${3:-eDP-1}"
-        ;;
-    set-audio)
-        [ "$#" -ge 2 ] || { echo "missing audio mode" >&2; exit 2; }
-        lock_operation
-        set_virtual_audio "$2"
-        ;;
-    modes)
-        print_modes
-        ;;
-    status)
-        print_status
-        ;;
-    log)
-        tail -n "${2:-80}" "$sunshine_log" 2>/dev/null || true
-        ;;
-    *)
-        echo "usage: $0 {start [PRIMARY]|stop|init [PRIMARY]|set-mode MODE [PRIMARY]|set-audio local|virtual|modes|status|log [N]}" >&2
-        exit 2
-        ;;
-esac
+if [ "${MONITOR_MENU_SOURCE_ONLY:-0}" != 1 ]; then
+    case "${1:-}" in
+        start)
+            lock_operation
+            start_virtual "${2:-eDP-1}"
+            ;;
+        stop)
+            lock_operation
+            stop_virtual
+            ;;
+        init)
+            lock_operation
+            init_virtual "${2:-eDP-1}"
+            ;;
+        set-mode)
+            [ "$#" -ge 2 ] || { echo "missing mode" >&2; exit 2; }
+            lock_operation
+            set_virtual_mode "$2" "${3:-eDP-1}"
+            ;;
+        set-audio)
+            [ "$#" -ge 2 ] || { echo "missing audio mode" >&2; exit 2; }
+            lock_operation
+            set_virtual_audio "$2"
+            ;;
+        modes)
+            print_modes
+            ;;
+        status)
+            print_status
+            ;;
+        log)
+            tail -n "${2:-80}" "$sunshine_log" 2>/dev/null || true
+            ;;
+        *)
+            echo "usage: $0 {start [PRIMARY]|stop|init [PRIMARY]|set-mode MODE [PRIMARY]|set-audio local|virtual|modes|status|log [N]}" >&2
+            exit 2
+            ;;
+    esac
+fi

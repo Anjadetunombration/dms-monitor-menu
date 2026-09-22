@@ -3,6 +3,7 @@ import Quickshell
 import qs.Common
 import qs.Widgets
 import qs.Modules.Plugins
+import "components" as Components
 
 PluginComponent {
     id: root
@@ -25,6 +26,7 @@ PluginComponent {
     property bool networkPasswordVisible: false
     property bool networkBusy: false
     property bool networkStatusBusy: false
+    property bool networkStatusPending: false
     property int networkSecretGeneration: 0
     property bool initializedVirtual: false
     property bool wlMirrorInstalled: false
@@ -71,6 +73,8 @@ PluginComponent {
         && virtualEnabled
         && virtualLifecycle === "ACTIVE"
         && !busy
+    readonly property bool virtualTransitioning: virtualLifecycle === "CREATING"
+        || virtualLifecycle === "DESTROYING"
     readonly property bool virtualControlsVisible: virtualReady || virtualPresent
 
     function runCommand(id, command, callback, debounceMs, timeoutMs) {
@@ -328,6 +332,7 @@ PluginComponent {
 
     function refreshNetworkStatus(done) {
         if (networkStatusBusy) {
+            root.networkStatusPending = true
             if (typeof done === "function")
                 done(false)
             return
@@ -338,6 +343,8 @@ PluginComponent {
             ["sudo", "-n", networkSystemHelper, "status"],
             (stdout, exitCode) => {
                 root.networkStatusBusy = false
+                const refreshAgain = root.networkStatusPending
+                root.networkStatusPending = false
                 if (exitCode !== 0) {
                     root.networkReady = false
                     root.networkEnabled = false
@@ -345,6 +352,7 @@ PluginComponent {
                     root.networkEffectiveMode = "stopped"
                     root.closePrivateLan()
                     if (typeof done === "function") done(false)
+                    if (refreshAgain) root.refreshNetworkStatus()
                     return
                 }
                 const s = root.parseStatus(stdout)
@@ -364,6 +372,7 @@ PluginComponent {
                     root.networkHostAddress = ""
                 }
                 if (typeof done === "function") done(true)
+                if (refreshAgain) root.refreshNetworkStatus()
             },
             100
         )
@@ -418,7 +427,8 @@ PluginComponent {
         root.runNetwork("stop", "", ok => {
             if (!ok && cleanupExpected)
                 root.lastError = "No se pudo limpiar la red privada"
-            if (typeof done === "function") done(ok)
+            if (typeof done === "function")
+                done(ok || (!root.networkReady && !cleanupExpected))
         })
     }
 
@@ -510,7 +520,7 @@ PluginComponent {
         if (virtualLifecycle === "DESTROYING")
             return "Destruyendo " + virtualOutput + "…"
         if (!virtualPresent)
-            return "Apagado · VKMS descargado"
+            return "Apagado · salida VKMS desconectada"
         if (virtualEnabled && !virtualSunshine)
             return virtualOutput + " · " + virtualWidth + "×" + virtualHeight + " · sin Sunshine"
         if (virtualEnabled && virtualCapture === "wrong")
@@ -564,7 +574,7 @@ PluginComponent {
     }
 
     function setVirtualMode(mode) {
-        if (busy || !virtualPresent || !virtualHelperPath)
+        if (!virtualInteractive || !virtualHelperPath)
             return
 
         root.busy = true
@@ -589,7 +599,7 @@ PluginComponent {
     }
 
     function setVirtualAudio(mode) {
-        if (busy || !virtualPresent || !virtualHelperPath)
+        if (!virtualInteractive || !virtualHelperPath)
             return
         if (mode !== "local" && mode !== "virtual")
             return
@@ -618,7 +628,7 @@ PluginComponent {
     }
 
     function toggleVirtual() {
-        if (busy)
+        if (busy || networkBusy || virtualTransitioning)
             return
 
         if (!virtualReady) {
@@ -644,14 +654,13 @@ PluginComponent {
                     else if (exitCode !== 0)
                         root.lastError = "No se pudo cambiar el monitor virtual"
 
-                    if (exitCode === 0 && turningOn) {
+                    const finishChange = () => {
                         root.busy = false
                         refreshAfterAction.restart()
-                        root.startNetwork()
-                    } else {
-                        root.busy = false
-                        refreshAfterAction.restart()
+                        if (exitCode === 0 && turningOn)
+                            root.startNetwork()
                     }
+                    root.refreshVirtualStatus(finishChange, "monitorMenu.virtualToggleRefresh")
                 },
                 0,
                 25000
@@ -660,12 +669,21 @@ PluginComponent {
 
         if (turningOn)
             changeVirtual()
-        else
-            root.stopNetwork(changeVirtual)
+        else {
+            root.stopNetwork(ok => {
+                if (ok) {
+                    changeVirtual()
+                    return
+                }
+                root.busy = false
+                root.lastError = "No se pudo limpiar la red privada"
+                refreshAfterAction.restart()
+            })
+        }
     }
 
     function onlyPrimary() {
-        if (busy)
+        if (busy || networkBusy || virtualTransitioning)
             return
 
         root.busy = true
@@ -685,7 +703,11 @@ PluginComponent {
             }
 
             if ((virtualEnabled || virtualPresent) && virtualHelperPath) {
-                root.stopNetwork(() => {
+                root.stopNetwork(ok => {
+                    if (!ok) {
+                        finish()
+                        return
+                    }
                     root.runCommand(
                         "monitorMenu.modeVirtualStop",
                         ["sh", virtualHelperPath, "stop"],
@@ -705,7 +727,7 @@ PluginComponent {
     }
 
     function extendAll() {
-        if (busy)
+        if (busy || networkBusy || virtualTransitioning)
             return
 
         root.busy = true
@@ -753,7 +775,7 @@ PluginComponent {
     }
 
     function duplicatePrimary() {
-        if (busy || !canConfigureSecondary)
+        if (busy || networkBusy || virtualTransitioning || !canConfigureSecondary)
             return
 
         if (!wlMirrorInstalled) {
@@ -887,964 +909,30 @@ PluginComponent {
     )
 
     horizontalBarPill: Component {
-        StyledRect {
-            // Use PluginComponent dimensions directly. The loaded pill should not depend
-            // on its Loader parent exposing widgetThickness.
-            readonly property real innerPadding: root.forceBarPadding ? root.barPadding : 0
-            implicitWidth: Math.max(root.widgetThickness, root.iconSize + innerPadding * 2)
-            width: implicitWidth
-            height: root.widgetThickness
-            radius: Theme.cornerRadius
-            color: Theme.surfaceContainerHigh
-
-            DankIcon {
-                anchors.centerIn: parent
-                name: "desktop_windows"
-                size: root.iconSize
-                color: (root.mirrorActive || root.virtualEnabled) ? Theme.primary : Theme.surfaceText
-            }
+        Components.MonitorBarPill {
+            vertical: false
+            widgetThickness: root.widgetThickness
+            widgetIconSize: root.iconSize
+            active: root.mirrorActive || root.virtualEnabled
+            forcePadding: root.forceBarPadding
+            barPadding: root.barPadding
         }
     }
 
     verticalBarPill: Component {
-        StyledRect {
-            readonly property real innerPadding: root.forceBarPadding ? root.barPadding : 0
-            width: root.widgetThickness
-            implicitHeight: Math.max(root.widgetThickness, root.iconSize + innerPadding * 2)
-            height: implicitHeight
-            radius: Theme.cornerRadius
-            color: Theme.surfaceContainerHigh
-
-            DankIcon {
-                anchors.centerIn: parent
-                name: "desktop_windows"
-                size: root.iconSize
-                color: (root.mirrorActive || root.virtualEnabled) ? Theme.primary : Theme.surfaceText
-            }
+        Components.MonitorBarPill {
+            vertical: true
+            widgetThickness: root.widgetThickness
+            widgetIconSize: root.iconSize
+            active: root.mirrorActive || root.virtualEnabled
+            forcePadding: root.forceBarPadding
+            barPadding: root.barPadding
         }
     }
 
     popoutContent: Component {
-        PopoutComponent {
-            id: popout
-            headerText: "Pantallas"
-            detailsText: root.headerDetails()
-
-            property string copiedField: ""
-            Component.onDestruction: root.closePrivateLan()
-
-            Connections {
-                target: popout.parentPopout
-                enabled: popout.parentPopout !== null
-
-                function onShouldBeVisibleChanged() {
-                    if (popout.parentPopout.shouldBeVisible)
-                        root.refreshVisibleState()
-                }
-            }
-
-            // Keep transient network and display state current only while the menu is open.
-            Timer {
-                interval: 5000
-                repeat: true
-                running: popout.parentPopout?.shouldBeVisible ?? false
-                onTriggered: root.refreshVisibleState()
-            }
-
-            TextInput {
-                id: clipboardBuffer
-                width: 1
-                height: 1
-                opacity: 0
-                text: ""
-            }
-
-            Timer {
-                id: copyFeedbackTimer
-                interval: 1400
-                repeat: false
-                onTriggered: {
-                    popout.copiedField = ""
-                    clipboardBuffer.text = ""
-                    if (!root.networkPasswordVisible)
-                        root.networkPrivatePassword = ""
-                }
-            }
-
-            function copyValue(value, field) {
-                if (!value)
-                    return
-                clipboardBuffer.text = value
-                clipboardBuffer.selectAll()
-                clipboardBuffer.copy()
-                clipboardBuffer.deselect()
-                popout.copiedField = field
-                copyFeedbackTimer.restart()
-            }
-
-            Column {
-                width: parent.width
-                spacing: Theme.spacingS
-
-                Repeater {
-                    model: root.physicalOutputs
-
-                    delegate: StyledRect {
-                        property var outputData: modelData
-
-                        width: parent.width
-                        height: 58
-                        radius: Theme.cornerRadius
-                        color: outputMouse.containsMouse && outputData.name !== root.primaryOutput
-                               ? Theme.surfaceContainerHighest
-                               : Theme.surfaceContainerHigh
-
-                        DankIcon {
-                            id: displayIcon
-                            anchors.left: parent.left
-                            anchors.leftMargin: Theme.spacingM
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: outputData.name === root.primaryOutput ? "laptop" : "monitor"
-                            size: Theme.iconSize
-                            color: Theme.surfaceText
-                        }
-
-                        Column {
-                            anchors.left: displayIcon.right
-                            anchors.leftMargin: Theme.spacingM
-                            anchors.right: stateLabel.left
-                            anchors.rightMargin: Theme.spacingM
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 2
-
-                            StyledText {
-                                width: parent.width
-                                text: root.friendlyName(outputData.name)
-                                color: Theme.surfaceText
-                                font.pixelSize: Theme.fontSizeMedium
-                                elide: Text.ElideRight
-                            }
-
-                            StyledText {
-                                width: parent.width
-                                text: outputData.name
-                                      + (outputData.width > 0
-                                         ? " · " + outputData.width + "×" + outputData.height
-                                           + " · " + root.hz(outputData.refresh) + " Hz"
-                                         : "")
-                                      + (outputData.name === root.primaryOutput ? " · Principal" : "")
-                                color: Theme.surfaceVariantText
-                                font.pixelSize: Theme.fontSizeSmall
-                                elide: Text.ElideRight
-                            }
-                        }
-
-                        StyledText {
-                            id: stateLabel
-                            anchors.right: parent.right
-                            anchors.rightMargin: Theme.spacingM
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: outputData.enabled ? "ON" : "OFF"
-                            color: outputData.enabled ? Theme.primary : Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                        }
-
-                        MouseArea {
-                            id: outputMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            enabled: outputData.name !== root.primaryOutput && !root.busy
-                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                            onClicked: root.toggleOutput(outputData)
-                        }
-                    }
-                }
-
-                StyledRect {
-                    visible: root.canConfigureSecondary
-                    width: parent.width
-                    height: 48
-                    radius: Theme.cornerRadius
-                    color: modeMouse.containsMouse
-                           ? Theme.surfaceContainerHighest
-                           : Theme.surfaceContainerHigh
-
-                    DankIcon {
-                        id: modeIcon
-                        anchors.left: parent.left
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        name: root.mirrorActive ? "content_copy" : "view_carousel"
-                        size: Theme.iconSize
-                        color: Theme.surfaceText
-                    }
-
-                    StyledText {
-                        anchors.left: modeIcon.right
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Modo de pantalla"
-                        color: Theme.surfaceText
-                        font.pixelSize: Theme.fontSizeMedium
-                    }
-
-                    Row {
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: Theme.spacingXS
-
-                        StyledText {
-                            text: root.currentMode
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                        }
-
-                        DankIcon {
-                            name: root.modesExpanded ? "expand_less" : "chevron_right"
-                            size: Theme.iconSizeSmall
-                            color: Theme.surfaceVariantText
-                        }
-                    }
-
-                    MouseArea {
-                        id: modeMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            root.modesExpanded = !root.modesExpanded
-                            if (root.modesExpanded) {
-                                root.resolutionExpanded = false
-                                root.audioExpanded = false
-                                root.networkExpanded = false
-                                root.closePrivateLan()
-                            }
-                        }
-                    }
-                }
-
-                Column {
-                    visible: root.canConfigureSecondary && root.modesExpanded
-                    width: parent.width
-                    spacing: Theme.spacingXS
-
-                    Repeater {
-                        model: [
-                            { label: "Solo principal", icon: "laptop", action: "primary", enabled: true },
-                            { label: "Duplicar", icon: "content_copy", action: "duplicate", enabled: root.wlMirrorInstalled },
-                            { label: "Extender", icon: "desktop_windows", action: "extend", enabled: true }
-                        ]
-
-                        delegate: StyledRect {
-                            property var modeData: modelData
-
-                            width: parent.width
-                            height: 42
-                            radius: Theme.cornerRadius
-                            color: modeOptionMouse.containsMouse && modeData.enabled
-                                   ? Theme.surfaceContainerHighest
-                                   : Theme.surfaceContainerHigh
-                            opacity: modeData.enabled ? 1.0 : 0.55
-
-                            DankIcon {
-                                id: optionIcon
-                                anchors.left: parent.left
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: modeData.icon
-                                size: Theme.iconSizeSmall
-                                color: Theme.surfaceText
-                            }
-
-                            StyledText {
-                                anchors.left: optionIcon.right
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: modeData.label
-                                color: Theme.surfaceText
-                                font.pixelSize: Theme.fontSizeSmall
-                            }
-
-                            StyledText {
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                visible: modeData.action === "duplicate" && !root.wlMirrorInstalled
-                                text: "requiere wl-mirror"
-                                color: Theme.surfaceVariantText
-                                font.pixelSize: Theme.fontSizeSmall
-                            }
-
-                            MouseArea {
-                                id: modeOptionMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                enabled: modeData.enabled && !root.busy
-                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onClicked: {
-                                    if (modeData.action === "primary")
-                                        root.onlyPrimary()
-                                    else if (modeData.action === "duplicate")
-                                        root.duplicatePrimary()
-                                    else if (modeData.action === "extend")
-                                        root.extendAll()
-                                }
-                            }
-                        }
-                    }
-                }
-
-                StyledRect {
-                    width: parent.width
-                    height: 58
-                    radius: Theme.cornerRadius
-                    color: virtualMouse.containsMouse && root.virtualReady
-                           ? Theme.surfaceContainerHighest
-                           : Theme.surfaceContainerHigh
-                    opacity: root.virtualReady ? 1.0 : 0.65
-
-                    DankIcon {
-                        id: virtualIcon
-                        anchors.left: parent.left
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        name: "cast"
-                        size: Theme.iconSize
-                        color: root.virtualEnabled ? Theme.primary : Theme.surfaceText
-                    }
-
-                    Column {
-                        anchors.left: virtualIcon.right
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.right: virtualState.left
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 2
-
-                        StyledText {
-                            width: parent.width
-                            text: "Monitor virtual"
-                            color: Theme.surfaceText
-                            font.pixelSize: Theme.fontSizeMedium
-                            elide: Text.ElideRight
-                        }
-
-                        StyledText {
-                            width: parent.width
-                            text: root.virtualDetail()
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                            elide: Text.ElideRight
-                        }
-                    }
-
-                    StyledText {
-                        id: virtualState
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: root.virtualEnabled ? "ON" : "OFF"
-                        color: root.virtualEnabled ? Theme.primary : Theme.surfaceVariantText
-                        font.pixelSize: Theme.fontSizeSmall
-                    }
-
-                    MouseArea {
-                        id: virtualMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        enabled: root.virtualReady && !root.busy
-                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                        onClicked: root.toggleVirtual()
-                    }
-                }
-
-                StyledRect {
-                    visible: root.virtualControlsVisible
-                    width: parent.width
-                    height: 48
-                    radius: Theme.cornerRadius
-                    color: resolutionMouse.containsMouse
-                           ? Theme.surfaceContainerHighest
-                           : Theme.surfaceContainerHigh
-                    opacity: root.virtualInteractive ? 1.0 : 0.55
-
-                    DankIcon {
-                        id: resolutionIcon
-                        anchors.left: parent.left
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        name: "aspect_ratio"
-                        size: Theme.iconSize
-                        color: Theme.surfaceText
-                    }
-
-                    StyledText {
-                        anchors.left: resolutionIcon.right
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Resolución virtual"
-                        color: Theme.surfaceText
-                        font.pixelSize: Theme.fontSizeMedium
-                    }
-
-                    Row {
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: Theme.spacingXS
-
-                        StyledText {
-                            text: root.virtualWidth + "×" + root.virtualHeight
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                        }
-
-                        DankIcon {
-                            name: root.resolutionExpanded ? "expand_less" : "chevron_right"
-                            size: Theme.iconSizeSmall
-                            color: Theme.surfaceVariantText
-                        }
-                    }
-
-                    MouseArea {
-                        id: resolutionMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        enabled: root.virtualInteractive && root.virtualModes.length > 0
-                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                        onClicked: {
-                            root.resolutionExpanded = !root.resolutionExpanded
-                            if (root.resolutionExpanded) {
-                                root.modesExpanded = false
-                                root.audioExpanded = false
-                                root.networkExpanded = false
-                                root.closePrivateLan()
-                            }
-                        }
-                    }
-                }
-
-                Column {
-                    visible: root.virtualInteractive && root.resolutionExpanded
-                    width: parent.width
-                    spacing: Theme.spacingXS
-
-                    Repeater {
-                        model: root.virtualModes
-
-                        delegate: StyledRect {
-                            property var resolutionData: modelData
-                            readonly property bool selected: root.virtualWidth === resolutionData.width
-                                                             && root.virtualHeight === resolutionData.height
-                                                             && Math.abs(root.virtualRefresh - resolutionData.refresh) < 1000
-
-                            width: parent.width
-                            height: 42
-                            radius: Theme.cornerRadius
-                            color: resolutionOptionMouse.containsMouse
-                                   ? Theme.surfaceContainerHighest
-                                   : Theme.surfaceContainerHigh
-
-                            DankIcon {
-                                id: resolutionCheck
-                                anchors.left: parent.left
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: selected ? "check_circle" : "radio_button_unchecked"
-                                size: Theme.iconSizeSmall
-                                color: selected ? Theme.primary : Theme.surfaceVariantText
-                            }
-
-                            StyledText {
-                                anchors.left: resolutionCheck.right
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: resolutionData.label
-                                color: selected ? Theme.primary : Theme.surfaceText
-                                font.pixelSize: Theme.fontSizeSmall
-                            }
-
-                            StyledText {
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: resolutionData.width + "×" + resolutionData.height
-                                      + " · " + Math.round(resolutionData.refresh / 1000) + " Hz"
-                                color: Theme.surfaceVariantText
-                                font.pixelSize: Theme.fontSizeSmall
-                            }
-
-                            MouseArea {
-                                id: resolutionOptionMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                enabled: !root.busy && !selected
-                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onClicked: root.setVirtualMode(resolutionData.mode)
-                            }
-                        }
-                    }
-                }
-
-
-                StyledRect {
-                    visible: root.virtualControlsVisible
-                    width: parent.width
-                    height: 48
-                    radius: Theme.cornerRadius
-                    color: audioMouse.containsMouse
-                           ? Theme.surfaceContainerHighest
-                           : Theme.surfaceContainerHigh
-                    opacity: root.virtualInteractive ? 1.0 : 0.55
-
-                    DankIcon {
-                        id: audioIcon
-                        anchors.left: parent.left
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        name: root.virtualAudioMode === "virtual" ? "cast_connected" : "volume_up"
-                        size: Theme.iconSize
-                        color: Theme.surfaceText
-                    }
-
-                    StyledText {
-                        anchors.left: audioIcon.right
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Audio"
-                        color: Theme.surfaceText
-                        font.pixelSize: Theme.fontSizeMedium
-                    }
-
-                    Row {
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: Theme.spacingXS
-
-                        StyledText {
-                            text: root.virtualAudioMode === "virtual" ? "Virtual" : "Local"
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                        }
-
-                        DankIcon {
-                            name: root.audioExpanded ? "expand_less" : "chevron_right"
-                            size: Theme.iconSizeSmall
-                            color: Theme.surfaceVariantText
-                        }
-                    }
-
-                    MouseArea {
-                        id: audioMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        enabled: root.virtualInteractive
-                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                        onClicked: {
-                            root.audioExpanded = !root.audioExpanded
-                            if (root.audioExpanded) {
-                                root.resolutionExpanded = false
-                                root.modesExpanded = false
-                                root.networkExpanded = false
-                                root.closePrivateLan()
-                            }
-                        }
-                    }
-                }
-
-                Column {
-                    visible: root.virtualInteractive && root.audioExpanded
-                    width: parent.width
-                    spacing: Theme.spacingXS
-
-                    Repeater {
-                        model: [
-                            {
-                                mode: "local",
-                                label: "Local",
-                                detail: "Audio solo en el equipo",
-                                icon: "speaker"
-                            },
-                            {
-                                mode: "virtual",
-                                label: "Virtual",
-                                detail: "Audio solo en el receptor virtual",
-                                icon: "cast_connected"
-                            }
-                        ]
-
-                        delegate: StyledRect {
-                            property var audioData: modelData
-                            readonly property bool selected: root.virtualAudioMode === audioData.mode
-
-                            width: parent.width
-                            height: 42
-                            radius: Theme.cornerRadius
-                            color: audioOptionMouse.containsMouse
-                                   ? Theme.surfaceContainerHighest
-                                   : Theme.surfaceContainerHigh
-
-                            DankIcon {
-                                id: audioCheck
-                                anchors.left: parent.left
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: selected ? "check_circle" : audioData.icon
-                                size: Theme.iconSizeSmall
-                                color: selected ? Theme.primary : Theme.surfaceVariantText
-                            }
-
-                            Column {
-                                anchors.left: audioCheck.right
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 1
-
-                                StyledText {
-                                    text: audioData.label
-                                    color: selected ? Theme.primary : Theme.surfaceText
-                                    font.pixelSize: Theme.fontSizeSmall
-                                }
-
-                                StyledText {
-                                    text: audioData.detail
-                                    color: Theme.surfaceVariantText
-                                    font.pixelSize: Theme.fontSizeSmall
-                                }
-                            }
-
-                            MouseArea {
-                                id: audioOptionMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                enabled: !root.busy && !selected
-                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onClicked: root.setVirtualAudio(audioData.mode)
-                            }
-                        }
-                    }
-                }
-
-                StyledRect {
-                    visible: root.virtualPresent
-                    width: parent.width
-                    height: 58
-                    radius: Theme.cornerRadius
-                    color: networkMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-                    opacity: root.networkBusy ? 0.65 : 1.0
-
-                    DankIcon {
-                        id: networkIcon
-                        anchors.left: parent.left
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        name: root.privateLanActive ? "lan" : "wifi"
-                        size: Theme.iconSize
-                        color: root.networkEnabled ? Theme.primary : Theme.surfaceText
-                    }
-
-                    Column {
-                        anchors.left: networkIcon.right
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.right: networkModeRow.left
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 2
-
-                        StyledText {
-                            width: parent.width
-                            text: "Modo de red"
-                            color: Theme.surfaceText
-                            font.pixelSize: Theme.fontSizeMedium
-                            elide: Text.ElideRight
-                        }
-
-                        StyledText {
-                            width: parent.width
-                            text: root.networkDetail()
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                            elide: Text.ElideRight
-                        }
-                    }
-
-                    Row {
-                        id: networkModeRow
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: Theme.spacingXS
-
-                        StyledText {
-                            text: root.networkModeLabel(root.networkMode)
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                        }
-
-                        DankIcon {
-                            name: root.networkExpanded ? "expand_less" : "chevron_right"
-                            size: Theme.iconSizeSmall
-                            color: Theme.surfaceVariantText
-                        }
-                    }
-
-                    MouseArea {
-                        id: networkMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        enabled: !root.busy && !root.networkBusy
-                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                        onClicked: {
-                            root.networkExpanded = !root.networkExpanded
-                            if (root.networkExpanded) {
-                                root.modesExpanded = false
-                                root.resolutionExpanded = false
-                                root.audioExpanded = false
-                                root.closePrivateLan()
-                            }
-                        }
-                    }
-                }
-
-                Column {
-                    visible: root.virtualPresent && root.networkExpanded
-                    width: parent.width
-                    spacing: Theme.spacingXS
-
-                    Repeater {
-                        model: [
-                            { mode: "auto", label: "Automático", detail: "Se adapta a la red disponible", icon: "sync" },
-                            { mode: "current", label: "Red actual", detail: "Usa la red donde ya estás conectado", icon: "wifi" },
-                            { mode: "bypass", label: "Bypass", detail: "Crea una conexión privada directa", icon: "lan" }
-                        ]
-
-                        delegate: StyledRect {
-                            property var networkData: modelData
-                            readonly property bool selected: root.networkMode === networkData.mode
-                            width: parent.width
-                            height: 42
-                            radius: Theme.cornerRadius
-                            color: networkOptionMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-                            opacity: root.networkReady ? 1.0 : 0.65
-
-                            DankIcon {
-                                id: networkCheck
-                                anchors.left: parent.left
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: selected ? "check_circle" : networkData.icon
-                                size: Theme.iconSizeSmall
-                                color: selected ? Theme.primary : Theme.surfaceVariantText
-                            }
-
-                            Column {
-                                anchors.left: networkCheck.right
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                StyledText {
-                                    text: networkData.label
-                                    color: selected ? Theme.primary : Theme.surfaceText
-                                    font.pixelSize: Theme.fontSizeSmall
-                                }
-                                StyledText {
-                                    text: networkData.detail
-                                    color: Theme.surfaceVariantText
-                                    font.pixelSize: Theme.fontSizeSmall
-                                }
-                            }
-
-                            MouseArea {
-                                id: networkOptionMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                enabled: root.networkReady && !root.busy && !root.networkBusy && !selected
-                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onClicked: root.setNetworkMode(networkData.mode)
-                            }
-                        }
-                    }
-                }
-
-                StyledRect {
-                    visible: root.virtualPresent && root.privateLanActive
-                    width: parent.width
-                    height: 58
-                    radius: Theme.cornerRadius
-                    color: privateLanMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-
-                    DankIcon {
-                        id: privateLanIcon
-                        anchors.left: parent.left
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        name: "lan"
-                        size: Theme.iconSize
-                        color: Theme.primary
-                    }
-
-                    Column {
-                        anchors.left: privateLanIcon.right
-                        anchors.leftMargin: Theme.spacingM
-                        anchors.right: privateLanRight.left
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 2
-                        StyledText {
-                            text: "LAN privada"
-                            color: Theme.surfaceText
-                            font.pixelSize: Theme.fontSizeMedium
-                        }
-                        StyledText {
-                            width: parent.width
-                            text: root.privateLanDetail()
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                            elide: Text.ElideRight
-                        }
-                    }
-
-                    Row {
-                        id: privateLanRight
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: Theme.spacingXS
-                        StyledText {
-                            text: "Activa"
-                            color: Theme.primary
-                            font.pixelSize: Theme.fontSizeSmall
-                        }
-                        DankIcon {
-                            name: root.privateLanExpanded ? "expand_less" : "chevron_right"
-                            size: Theme.iconSizeSmall
-                            color: Theme.surfaceVariantText
-                        }
-                    }
-
-                    MouseArea {
-                        id: privateLanMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            root.privateLanExpanded = !root.privateLanExpanded
-                            root.networkExpanded = false
-                            if (!root.privateLanExpanded) {
-                                root.closePrivateLan()
-                            }
-                        }
-                    }
-                }
-
-                Column {
-                    visible: root.virtualPresent && root.privateLanActive && root.privateLanExpanded
-                    width: parent.width
-                    spacing: Theme.spacingXS
-
-                    Repeater {
-                        model: [
-                            { field: "host", label: "Host", icon: "lan" },
-                            { field: "password", label: "Clave", icon: "key" }
-                        ]
-
-                        delegate: StyledRect {
-                            property var secretData: modelData
-                            readonly property bool revealed: secretData.field === "host"
-                                ? root.networkHostVisible : root.networkPasswordVisible
-                            readonly property string value: secretData.field === "host"
-                                ? root.networkHostAddress : root.networkPrivatePassword
-                            width: parent.width
-                            height: 42
-                            radius: Theme.cornerRadius
-                            color: secretMouse.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-
-                            DankIcon {
-                                id: secretIcon
-                                anchors.left: parent.left
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: secretData.icon
-                                size: Theme.iconSizeSmall
-                                color: Theme.surfaceVariantText
-                            }
-
-                            StyledText {
-                                anchors.left: secretIcon.right
-                                anchors.leftMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: secretData.label
-                                color: Theme.surfaceText
-                                font.pixelSize: Theme.fontSizeSmall
-                            }
-
-                            Row {
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.spacingM
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: Theme.spacingXS
-                                StyledText {
-                                    text: popout.copiedField === secretData.field
-                                        ? (secretData.field === "host" ? "Copiado" : "Copiada")
-                                        : root.hiddenValue(value, revealed)
-                                    color: (revealed || popout.copiedField === secretData.field)
-                                        ? Theme.primary : Theme.surfaceVariantText
-                                    font.pixelSize: Theme.fontSizeSmall
-                                }
-                                DankIcon {
-                                    name: popout.copiedField === secretData.field
-                                        ? "check" : (revealed ? "visibility_off" : "visibility")
-                                    size: Theme.iconSizeSmall
-                                    color: popout.copiedField === secretData.field ? Theme.primary : Theme.surfaceVariantText
-                                }
-                            }
-
-                            MouseArea {
-                                id: secretMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: mouse => {
-                                    const requestedField = secretData.field
-                                    const requestedButton = mouse.button
-                                    const generation = root.networkSecretGeneration
-                                    root.fetchNetworkSecret(requestedField, (ok, freshValue) => {
-                                        if (!ok || generation !== root.networkSecretGeneration
-                                                || !root.privateLanActive || !root.privateLanExpanded)
-                                            return
-                                        if (requestedButton === Qt.RightButton) {
-                                            popout.copyValue(freshValue, requestedField)
-                                            return
-                                        }
-                                        if (requestedField === "host") {
-                                            root.networkHostAddress = freshValue
-                                            root.networkHostVisible = !root.networkHostVisible
-                                        } else {
-                                            root.networkPrivatePassword = freshValue
-                                            root.networkPasswordVisible = !root.networkPasswordVisible
-                                            if (!root.networkPasswordVisible)
-                                                root.networkPrivatePassword = ""
-                                        }
-                                    })
-                                }
-                            }
-                        }
-                    }
-                }
-
-                StyledText {
-                    visible: root.lastError.length > 0
-                    width: parent.width
-                    text: root.lastError
-                    color: Theme.error
-                    font.pixelSize: Theme.fontSizeSmall
-                    wrapMode: Text.WordWrap
-                }
-            }
+        Components.MonitorMenuPopout {
+            backend: root
         }
     }
 }

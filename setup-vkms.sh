@@ -37,7 +37,7 @@ legacy_conf_owned() {
 install_helper() {
     require_root install
     user=$(normal_user)
-    script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+    script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
     src=$script_dir/vkms-helper.sh
     [ -f "$src" ] || { echo "No se encontró vkms-helper.sh" >&2; exit 1; }
     for cmd in modprobe sudo visudo; do
@@ -72,7 +72,7 @@ install_helper() {
     : > "$OWNED_FILE"
     chmod 0600 "$OWNED_FILE"
     rm -f "$LEGACY_CONF"
-    rm -f "$SUDOERS_DIR"/monitor-menu-vkms-*
+    rm -f "$sudoers"
     install -m 0440 -o root -g root "$tmp" "$sudoers"
     rm -f "$tmp"
     trap - EXIT HUP INT TERM
@@ -81,6 +81,8 @@ install_helper() {
 
 remove_helper() {
     require_root remove
+    user=$(normal_user)
+    sudoers=$SUDOERS_DIR/monitor-menu-vkms-$user
     if [ -x "$DEST" ]; then
         "$DEST" destroy >/dev/null 2>&1 || {
             echo "No se pudo desconectar VKMS; apaga el monitor virtual antes de desinstalar." >&2
@@ -88,7 +90,7 @@ remove_helper() {
         }
     fi
     rm -f "$LEGACY_CONF"
-    rm -f "$SUDOERS_DIR"/monitor-menu-vkms-*
+    rm -f "$sudoers"
     rm -f "$OWNED_FILE" "$DEST"
     rmdir "$STATE_DIR" 2>/dev/null || true
     printf 'installed=0\n'

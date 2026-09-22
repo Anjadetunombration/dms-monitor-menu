@@ -1,13 +1,21 @@
 #!/bin/sh
 set -eu
 
-runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
+runtime_dir="${XDG_RUNTIME_DIR:-/tmp/monitor-menu-$(id -u)}"
 pidfile="$runtime_dir/monitor-menu-wl-mirror.pids"
+
+mirror_pid_running() {
+    pid=$1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 1 ] || return 1
+    [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = wl-mirror ] \
+        && kill -0 "$pid" 2>/dev/null
+}
 
 stop_mirrors() {
     if [ -f "$pidfile" ]; then
         while IFS= read -r pid; do
-            [ -n "$pid" ] || continue
+            mirror_pid_running "$pid" || continue
             kill "$pid" 2>/dev/null || true
         done < "$pidfile"
         rm -f "$pidfile"
@@ -17,28 +25,17 @@ stop_mirrors() {
 status_mirrors() {
     [ -f "$pidfile" ] || {
         printf '%s\n' inactive
-        exit 0
+        return 0
     }
 
-    alive=0
-    tmp="${pidfile}.tmp"
-    : > "$tmp"
-
     while IFS= read -r pid; do
-        [ -n "$pid" ] || continue
-        if kill -0 "$pid" 2>/dev/null; then
-            printf '%s\n' "$pid" >> "$tmp"
-            alive=$((alive + 1))
+        if mirror_pid_running "$pid"; then
+            printf '%s\n' active
+            return 0
         fi
     done < "$pidfile"
 
-    if [ "$alive" -gt 0 ]; then
-        mv "$tmp" "$pidfile"
-        printf '%s\n' active
-    else
-        rm -f "$tmp" "$pidfile"
-        printf '%s\n' inactive
-    fi
+    printf '%s\n' inactive
 }
 
 case "${1:-}" in
@@ -50,6 +47,8 @@ case "${1:-}" in
 
         command -v wl-mirror >/dev/null 2>&1 || exit 127
 
+        mkdir -p "$runtime_dir"
+        chmod 0700 "$runtime_dir"
         stop_mirrors
         : > "$pidfile"
 

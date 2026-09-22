@@ -2,8 +2,8 @@
   "id": "monitorMenu",
   "name": "Monitor Menu",
   "description": "Gestión de monitores físicos, virtuales y red adaptable para DMS/Niri",
-  "version": "0.8.0",
-  "author": "Community",
+  "version": "0.8.1",
+  "author": "Anjadetunombration and contributors",
   "type": "widget",
   "capabilities": [
     "dankbar-widget"
